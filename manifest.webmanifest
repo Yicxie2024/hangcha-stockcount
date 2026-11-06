@@ -1,0 +1,1 @@
+{"name":"Hangcha StockCount Offline","short_name":"StockCount","description":"Offline stocktaking application","start_url":"./index.html","scope":"./","display":"standalone","background_color":"#f3f6fa","theme_color":"#15324e","icons":[{"src":"icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]}
