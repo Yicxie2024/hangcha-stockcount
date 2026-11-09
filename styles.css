@@ -110,3 +110,12 @@ body.temp-edit #count #nextBtn{flex:1.8;display:flex}
 .pipeline-node.return-origin{border-style:dashed;border-color:#7e9ab0;background:#f4f8fb}
 body.temp-edit .pipeline-node:disabled{opacity:.38;cursor:not-allowed}
 body.temp-edit .pipeline-node:not(:disabled){touch-action:manipulation}
+
+/* v0.3.9: an independent one-tap full-record save when the draft is complete */
+#count .bottom-actions{flex-wrap:wrap}
+#count .bottom-actions .direct-save{flex:1 0 100%;order:-1;background:#17684c;box-shadow:0 3px 12px #1a765032;min-height:54px}
+#count .bottom-actions .direct-save:active{background:#105139}
+#count .bottom-actions .direct-save:disabled{opacity:.5}
+body.temp-edit #count .bottom-actions .direct-save{display:flex}
+
+#count .bottom-actions:has(.direct-save:not([style*="display: none"])) #nextBtn{background:#e9f0f7;color:#315574;box-shadow:none}

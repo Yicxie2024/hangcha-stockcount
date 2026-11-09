@@ -1,4 +1,4 @@
-const CACHE='hangcha-stockcount-v0.3.8';
+const CACHE='hangcha-stockcount-v0.3.9';
 const STATIC=['./','./index.html','./styles.css','./app.js','./manifest.webmanifest','./icon.svg'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(STATIC)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',e=>e.waitUntil(Promise.all([caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('hangcha-stockcount-')&&k!==CACHE).map(k=>caches.delete(k)))),self.clients.claim()])));
