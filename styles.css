@@ -14,3 +14,18 @@
 .rack-description b{font-size:14px;color:#1c435f}
 .rack-description span{font-size:12px;color:#60778b;line-height:1.5;overflow-wrap:anywhere}
 @media(max-width:360px){.rack-preview{gap:8px;padding:8px}.rack-stack{margin-left:3px}.rack-cells{width:47px}.rack-description b{font-size:13px}}
+
+/* v0.3.3: search and four-field measurement panel */
+.part-search{margin:12px 0}
+.part-search input[type=search]{font-size:18px}
+.part-results{margin:12px 0 8px;max-height:49vh;overflow:auto;overscroll-behavior:contain}
+.part-results .choice{margin:8px 0;min-height:70px;align-items:center}
+.manual-part{border:1px solid #dce5ed;border-radius:12px;background:#fff;padding:12px;margin:16px 0}
+.manual-part summary{font-size:14px;font-weight:700;color:#2b5575;cursor:pointer;min-height:25px}
+.measure-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;margin:16px 0}
+.measure-field{margin:0;min-width:0}
+.measure-field span{display:block;color:#365573;font-size:14px;margin-bottom:7px}
+.measure-field input{min-width:0;min-height:66px;font-size:23px;font-weight:650;text-align:center}
+.reference-hint{background:#fff7e8;color:#845e22;padding:11px;border-radius:9px;font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+
+.ref-use{min-height:44px;font-size:13px;margin:8px 0 12px;padding:9px 12px;text-align:center}
