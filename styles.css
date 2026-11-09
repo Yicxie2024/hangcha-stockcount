@@ -29,3 +29,53 @@
 .reference-hint{background:#fff7e8;color:#845e22;padding:11px;border-radius:9px;font-size:12px;line-height:1.5;overflow-wrap:anywhere}
 
 .ref-use{min-height:44px;font-size:13px;margin:8px 0 12px;padding:9px 12px;text-align:center}
+
+
+/* v0.3.4: floor-first guided navigation, decorative 2.5D orientation views */
+.location-head{display:flex;align-items:center;justify-content:space-between;gap:9px}
+.location-head #locPreview{min-width:0;flex:1}
+.floor-switch{border:1px solid #c7dbe9;border-radius:9px;padding:9px 10px;background:#e9f2f8;color:#23547d;font-size:12px;font-weight:750;white-space:nowrap;min-height:38px}
+.floor-context{font-size:11px;color:#54768e;margin:0 0 7px}
+.location-trail{display:flex;flex-wrap:wrap;gap:3px;align-items:center;padding:1px 0 5px}
+.trail-item{font-size:12px;font-weight:750;background:#edf3f7;color:#2c5574;min-height:31px;padding:5px 9px;border:1px solid #dce7ef;border-radius:8px;cursor:pointer}
+.trail-item.trail-current{border-color:#ee875b;background:#fff0e8;color:#9d4a25}
+.trail-empty{color:#7a8d9f;font-weight:500}
+.trail-sep{color:#91a3b3;font-size:15px;padding:0 1px}
+.floor-choice-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+.floor-choice{border:1px solid #d0dfec;border-radius:13px;padding:14px 4px;background:white;min-height:74px;color:#244967;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px}
+.floor-choice.selected{border:2px solid #e6814a;background:#fff5ed}
+.floor-choice b{font-size:22px}.floor-choice small{color:#637d8d;font-size:11px}
+.rack-preview.scene-preview{flex-direction:column;align-items:stretch;gap:8px;padding:11px}
+.scene-illustration{width:100%;min-height:75px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.scene-preview .rack-description{gap:3px;text-align:center}
+.scene-preview .rack-description b{font-size:13px}
+.scene-preview .rack-description span{font-size:11px}
+.scene-compact{min-height:0}
+.scene-compact .scene-illustration{min-height:63px;max-height:80px}
+.scene-compact .rack-stack{transform:scale(.72);transform-origin:center}
+.scene-floor-stack{display:flex;flex-direction:column;gap:8px;align-items:center;width:80%;max-width:260px;margin:4px 0 7px}
+.scene-floor-slab{height:32px;width:86%;position:relative;display:flex;align-items:center;justify-content:center;gap:15px;border:1px solid #91a7b9;background:linear-gradient(115deg,#c4d4e1,#8fa8bd);color:#2e516a;border-radius:3px;box-shadow:8px -5px 0 #a8bfd0,8px -6px 0 #8ea8ba;transform:skewY(-1deg);opacity:.65}
+.scene-floor-slab.scene-selected{background:linear-gradient(115deg,#f7c999,#e78d55);border-color:#dd773e;box-shadow:8px -5px 0 #edac7c,8px -6px 0 #d68b55;color:#5e341c;opacity:1}
+.scene-floor-slab b{font-size:15px}.scene-floor-slab small{font-size:10px}
+.scene-columns,.scene-rows{display:flex;align-items:end;justify-content:center;gap:3px;max-width:100%;width:100%;padding:13px 4px 7px}
+.scene-col-cube,.scene-row-cube{min-width:0;flex:1;height:65px;position:relative;display:flex;align-items:end;justify-content:center;background:linear-gradient(100deg,#9fb5c9,#7896af);border:1px solid #93abbd;border-radius:2px;box-shadow:3px -5px 0 #b4c9d9;color:#203d55}
+.scene-col-cube::before,.scene-row-cube::before{content:'';position:absolute;left:0;right:0;top:19px;border-top:1px solid #dce8f0;box-shadow:0 19px 0 #dce8f0}
+.scene-col-cube span,.scene-row-cube span{font-size:10px;font-weight:750;z-index:1;padding-bottom:4px}
+.scene-col-cube.scene-selected,.scene-row-cube.scene-selected{background:linear-gradient(110deg,#f3be86,#df8b4f);border-color:#ca7542;box-shadow:3px -5px 0 #edb27f;color:#59341f}
+.scene-row-cube{height:57px}.scene-rows{gap:4px}.scene-row-cube span{font-size:9px}
+.scene-preview .rack-stack{flex-direction:column;gap:4px;margin-left:0}
+.scene-preview .rack-cells{width:82px;gap:3px;padding:5px 7px}
+.scene-preview .rack-cell{height:7px}
+@media(max-width:365px){.scene-columns,.scene-rows{gap:2px;padding-left:2px;padding-right:2px}.scene-col-cube span,.scene-row-cube span{font-size:8px}.location-head #locPreview{font-size:20px}.floor-choice small{font-size:10px}}
+
+/* On a phone, keep all three large floor choices above the bottom navigation. */
+@media(max-width:480px){
+ .floor-stage .location-card{padding:12px;margin:9px 0}
+ .floor-stage .rack-preview.scene-preview{padding:7px 10px;margin:7px 0 3px;min-height:105px}
+ .floor-stage .scene-illustration{min-height:94px}
+ .floor-stage .scene-floor-stack{gap:5px;margin:1px 0 4px}
+ .floor-stage .scene-floor-slab{height:27px}
+ .floor-stage .step-title{margin:11px 0 6px}
+ .floor-stage .step-hint{margin-bottom:9px}
+ .floor-stage .floor-choice{min-height:62px;padding:9px 3px}
+}
