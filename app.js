@@ -1,4 +1,4 @@
-/* Hangcha StockCount Offline v0.3.4: floor-first contextual navigation; no external libraries or network API. */
+/* Hangcha StockCount Offline v0.3.5: floor-first contextual navigation; no external libraries or network API. */
 'use strict';
 const DB_NAME='hangcha-stockcount-01'; let db;let catalog=[];let meta={};let records=[];
 const STEPS=['floor','col','row','level','slot','partition','suffix','part','measure','qty','note'];
@@ -20,9 +20,8 @@ function resetDependentData(){
 function clearSelectedPart(){form.partKey='';form.erp='';form.partNo='';form.partName=''}
 function updateLocationView(){
   const preview=$('locPreview');if(preview)preview.textContent=canonical(form)||'—';
-  const floorText=$('floorContext');if(floorText)floorText.textContent=currentFloor()?`工作楼层：${currentFloor()}F · ${form.level?'库位层号已确定':'尚未选择具体层号'}`:'先选择物理楼层（不属于库位编号）';
   const change=$('changeFloor');if(change)change.textContent=currentFloor()?`切换 ${currentFloor()}F`:'选楼层';
-  renderTrail();renderRackPreview();
+  renderTrail();
 }
 function setLocationField(field,value){
   if(form[field]===value)return;
@@ -77,73 +76,6 @@ function backStep(){
   }
   step--;renderStep();
 }
-function renderFloorOverview(host){
-  const stack=element('div',{class:'scene-floor-stack'});
-  for(const floor of [3,2,1]){
-    const item=element('div',{class:'scene-floor-slab'+(currentFloor()===floor?' scene-selected':'')});
-    item.append(element('b',{},floor+'F'),element('small',{},pad2((floor-1)*4+1)+'–'+pad2(floor*4)));
-    stack.append(item);
-  }
-  host.append(stack);
-}
-function renderColumnScene(host){
-  const strip=element('div',{class:'scene-columns'});
-  for(const letter of 'ABCDEFGHIJKLMNOP'){
-    const cube=element('div',{class:'scene-col-cube'+(form.col===letter?' scene-selected':'')});
-    cube.append(element('span',{},letter));strip.append(cube);
-  }
-  host.append(strip);
-}
-function renderRowScene(host){
-  const max=form.col==='H'?13:['F','G'].includes(form.col)?8:12;
-  const strip=element('div',{class:'scene-rows'});
-  for(let i=1;i<=max;i++){
-    const name=pad2(i),cube=element('div',{class:'scene-row-cube'+(form.row===name?' scene-selected':'')});
-    cube.append(element('span',{},name));strip.append(cube);
-  }
-  host.append(strip);
-}
-function renderRackStack(host){
-  const illustration=element('div',{class:'rack-stack'});
-  const level=Number(form.level||0), floor=currentFloor();
-  for(let f=3;f>=1;f--){
-    const block=element('div',{class:'rack-floor'+(floor===f?' floor-active':'')});
-    const cells=element('div',{class:'rack-cells'});
-    for(let n=f*4;n>=f*4-3;n--){
-      const cell=element('span',{class:'rack-cell'+(level===n?' level-active':'')});
-      cell.title='货架层号 '+pad2(n);cells.append(cell);
-    }
-    block.append(cells,element('span',{class:'rack-floor-label'},f+'F'));
-    illustration.append(block);
-  }
-  host.append(illustration);
-}
-function renderRackPreview(){
-  const host=$('rackVisual');if(!host)return;host.replaceChildren();
-  const floor=currentFloor(),col=form.col,row=form.row,level=Number(form.level||0);
-  const wrap=element('div',{class:'rack-preview scene-preview'+(step>=STAGE.part?' scene-compact':'')});
-  const pic=element('div',{class:'scene-illustration'});
-  let heading='',detail='';
-  if(step===STAGE.floor){
-    renderFloorOverview(pic);heading='仓库三层总览';detail='先选工作楼层；下一条记录会记住本楼层。';
-  }else if(step===STAGE.col){
-    renderColumnScene(pic);heading=floor+'F · 选择 A–P 货架列';detail='16列概览，按下方大按钮选择，选中后自动进入行号。';
-  }else if(step===STAGE.row){
-    renderRowScene(pic);heading=floor+'F · '+col+'列';detail=['F','G'].includes(col)?'本列01–08，01靠近横向通道/楼梯方向。':col==='H'?'H列共13行。':'当前列共12行。';
-  }else{
-    renderRackStack(pic);heading=col+(row||'')+(level?(' · 层'+pad2(level)):' · 选择层号');
-    detail=`物理${floor}F，对应层号 ${pad2((floor-1)*4+1)}–${pad2(floor*4)}。`;
-    if(level)detail+='已定位本楼层第'+((level-1)%4+1)+'货架层。';
-    if(form.slot)detail+=' 格号'+form.slot+'。';
-    if(form.partition)detail+=' 箱子层'+form.partition+'。';
-    if(form.suffix)detail+=' 备注号'+form.suffix+'。';
-  }
-  const copy=element('div',{class:'rack-description'});
-  copy.append(element('b',{},heading),element('span',{},detail));
-  wrap.append(pic,copy);host.append(wrap);
-  host.setAttribute('role','img');host.setAttribute('aria-label',heading+'。'+detail+' 示意图只用于理解位置，具体选择请使用下方按钮。');
-}
-
 function showToast(str){const el=$('toast');el.textContent=str;el.classList.add('show');clearTimeout(showToast.t);showToast.t=setTimeout(()=>el.classList.remove('show'),3300)}
 function openDB(){return new Promise((resolve,reject)=>{const q=indexedDB.open(DB_NAME,2);q.onupgradeneeded=()=>{const d=q.result;if(!d.objectStoreNames.contains('records'))d.createObjectStore('records',{keyPath:'id'});if(!d.objectStoreNames.contains('catalog'))d.createObjectStore('catalog',{keyPath:'key'});if(!d.objectStoreNames.contains('metadata'))d.createObjectStore('metadata',{keyPath:'key'});if(!d.objectStoreNames.contains('shelves'))d.createObjectStore('shelves',{keyPath:'id'})};q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)})}
 function req(store,method,...args){return new Promise((resolve,reject)=>{const tx=db.transaction(store,'readwrite');const op=tx.objectStore(store)[method](...args);op.onsuccess=()=>resolve(op.result);op.onerror=()=>reject(op.error)})}
@@ -253,7 +185,6 @@ function renderStep(){
   $('stepName').textContent=TITLES[step];
   $('progressFill').style.width=(step+1)/STEPS.length*100+'%';
   updateLocationView();
-  $('lastPreview').textContent=lastLocation?'上一个库位：'+canonical(lastLocation):'';
   const a=$('stepArea');a.replaceChildren();
   $('backBtn').style.visibility='visible';
   $('backBtn').textContent=step===STAGE.part?'← 修改库位':'← 上一步';
