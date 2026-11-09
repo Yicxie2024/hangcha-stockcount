@@ -105,3 +105,8 @@ body.temp-edit #count .bottom-actions{bottom:10px;z-index:12}
 body.temp-edit #count #backBtn{flex:1.1;font-size:14px}
 body.temp-edit #count #nextBtn{flex:1.8;display:flex}
 #count .location-card{min-height:unset}
+
+/* v0.3.8: the starting point stays one-tap accessible during a detour. */
+.pipeline-node.return-origin{border-style:dashed;border-color:#7e9ab0;background:#f4f8fb}
+body.temp-edit .pipeline-node:disabled{opacity:.38;cursor:not-allowed}
+body.temp-edit .pipeline-node:not(:disabled){touch-action:manipulation}

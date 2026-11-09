@@ -1,4 +1,4 @@
-/* Hangcha StockCount Offline v0.3.7: resumable draft + transactional node editing. */
+/* Hangcha StockCount Offline v0.3.8: non-destructive cross-node edit switching. */
 'use strict';
 const DB_NAME='hangcha-stockcount-01'; let db;let catalog=[];let meta={};let records=[];
 const STEPS=['floor','col','row','level','slot','partition','suffix','part','measure','qty','note'];
@@ -34,6 +34,38 @@ function hasUnfinishedInput(d){const x=d?.form||{};return Boolean(d?.editId||d?.
 function nodeText(n,x){switch(n.id){case 'floor':return validFloor(x.floor)?x.floor+'F':'—';case 'part':return x.partNo||x.erp||'—';case 'dimensions':return [x.lengthCm,x.widthCm,x.heightCm].some(Boolean)?[x.lengthCm,x.widthCm,x.heightCm].map(y=>y||'–').join('×'):'—';case 'weight':return x.weightKg?x.weightKg+'kg':'—';case 'qty':return x.qty===''?'—':String(x.qty);case 'note':return x.note?(x.note.length>7?x.note.slice(0,7)+'…':x.note):'—';default:return x[n.fields[0]]||'—'}}
 function noteInputFocus(el){if(tempEdit||!el?.dataset?.draftField)return;let start=null,end=null;try{start=el.selectionStart;end=el.selectionEnd}catch(e){}focusBookmark={step,key:el.dataset.draftField,start,end,scrollY:window.scrollY,inputScrollTop:el.scrollTop||0}}
 function restoreReturnPoint(bookmark){if(!bookmark)return;requestAnimationFrame(()=>{const el=[...document.querySelectorAll('#stepArea [data-draft-field]')].find(x=>x.dataset.draftField===bookmark.key);if(el&&bookmark.step===step){try{el.focus({preventScroll:true});if(bookmark.start!==null&&bookmark.end!==null)el.setSelectionRange(bookmark.start,bookmark.end);if(Number.isFinite(bookmark.inputScrollTop))el.scrollTop=bookmark.inputScrollTop}catch(e){}}if(Number.isFinite(bookmark.scrollY))window.scrollTo(0,bookmark.scrollY)})}
+// A node is available as a *switch target* only when it already has a value in
+// the original counting draft. The original working stage is always accessible
+// (even when it is partially typed or empty) to resume work immediately.
+function isFilledNode(node,x){
+ if(node.id==='floor')return validFloor(x.floor);
+ if(node.id==='part')return Boolean(String(x.erp||'').trim()||String(x.partNo||'').trim());
+ if(node.id==='dimensions')return ['lengthCm','widthCm','heightCm'].some(k=>String(x[k]??'').trim());
+ return node.fields.some(k=>String(x[k]??'').trim()!=='');
+}
+function hasPendingTempChange(){
+ if(!tempEdit)return false;
+ const node=nodeById(tempEdit.target);
+ if(!node)return false;
+ const changed=node.fields.some(k=>String(form[k]??'')!==String(tempEdit.originalForm[k]??''));
+ return changed||(node.id==='part'&&partSearch!==tempEdit.originalSearch);
+}
+// Switching edit targets does not commit the old temporary value. Never nest an
+// edit: retain one immutable original draft and one original return bookmark.
+function switchTempEdit(id){
+ if(!tempEdit){beginTempEdit(id);return}
+ const node=nodeById(id);if(!node||id===tempEdit.target)return;
+ if(node.stage===tempEdit.originStep){exitTempEdit(false);return}
+ if(!isFilledNode(node,tempEdit.originalForm))return;
+ const discarded=hasPendingTempChange();
+ clearTimeout(searchTimer);
+ form=clone(tempEdit.originalForm);
+ partSearch=tempEdit.originalSearch;
+ tempEdit.target=id;
+ step=node.stage;
+ renderStep();scheduleDraftSave();
+ if(discarded)showToast('未确认的修改已放弃');
+}
 function beginTempEdit(id){
  if(tempEdit)return;
  const node=nodeById(id);if(!node)return;
@@ -68,6 +100,7 @@ function checkEditedValue(id,proposal){
 }
 function exitTempEdit(commit){
  if(!tempEdit)return;
+ clearTimeout(searchTimer);
  const edit=tempEdit;const original=clone(edit.originalForm);const proposed=clone(original);
  if(commit){for(const k of nodeById(edit.target).fields)proposed[k]=form[k];const err=checkEditedValue(edit.target,proposed);if(err){showToast(err);return}}
  const floorChanged=commit&&edit.target==='floor'&&Number(original.floor)!==Number(proposed.floor);
@@ -142,10 +175,13 @@ function renderTrail(){
   for(const node of NODE_GROUPS[group]){
    const selected=(tempEdit?tempEdit.target===node.id:node.stage===step&&((step!==STAGE.measure)||node.id==='dimensions'));
    const nodeView=tempEdit?tempEdit.originalForm:form;
-   const b=element('button',{type:'button',class:'pipeline-node'+(selected?' current':'')+(nodeText(node,nodeView)==='—'?' unfilled':''),onclick:()=>beginTempEdit(node.id)});
+   const originTarget=Boolean(tempEdit&&node.stage===tempEdit.originStep);
+   const canSwitch=!tempEdit||selected||originTarget||isFilledNode(node,tempEdit.originalForm);
+   const b=element('button',{type:'button',class:'pipeline-node'+(selected?' current':'')+(nodeText(node,nodeView)==='—'?' unfilled':'')+(tempEdit&&originTarget&&!selected?' return-origin':''),onclick:()=>switchTempEdit(node.id)});
    b.append(element('small',{},node.label),element('strong',{},nodeText(node,nodeView)));
-   b.title=`点击临时修改${node.label}`;
-   if(tempEdit){b.disabled=true;b.setAttribute('aria-disabled','true')}
+   b.title=tempEdit?(originTarget&&!selected?'返回之前的工作节点':selected?'正在编辑':canSwitch?'切换编辑（不保存当前修改）':'此节点尚未填写'): `点击临时修改${node.label}`;
+   if(!canSwitch){b.disabled=true;b.setAttribute('aria-disabled','true')}
+   if(tempEdit&&originTarget&&!selected)b.setAttribute('aria-label',`回到${node.label}继续输入，不保存临时修改`);
    host.append(b);
   }
  }
@@ -468,5 +504,5 @@ function currentShelf(){const c=form.col||'';const r=form.row||'';return c&&r?c+
 async function completeShelf(){const shelf=currentShelf();if(!shelf){showToast('请先选择列和货架号');return}const worker=$('worker').value.trim();const session=$('session').value.trim();if(!worker){showToast('请先填写盘点人');return}if(!confirm(`确认 ${currentFloor()}F · ${shelf} 的盘点已完成？\n这只是完成标记，不代表所有货物数量正确，也不阻止后续补盘。`))return;const id=crypto.randomUUID(),now=new Date().toISOString();await req('shelves','put',{id,shelf,physicalFloor:currentFloor(),worker,session,snapshotId:meta.snapshotId||'',completedAt:now,updatedAt:now,deleted:false});await load();showToast(`${currentFloor()}F · ${shelf} 已标记完成，导出时会一并提交`)}
 function renderShelves(){const list=$('shelfList');if(!list)return;list.replaceChildren();for(const t of shelves.filter(x=>!x.deleted).sort((a,b)=>b.completedAt.localeCompare(a.completedAt)).slice(0,30)){const d=element('div',{class:'rec'});d.append(element('strong',{},`${t.physicalFloor?t.physicalFloor+'F · ':''}${t.shelf}`),element('p',{class:'mini muted'},`${t.worker} · ${t.session} · ${t.completedAt.slice(0,16).replace('T',' ')}`));d.append(element('button',{class:'tiny',onclick:async()=>{if(!confirm(`撤销 ${t.shelf} 的已完成标记？`))return;await req('shelves','put',{...t,deleted:true,updatedAt:new Date().toISOString()});await load();renderShelves()}},'撤销标记'));list.append(d)}}
 async function importCatalog(file){if(!file)return;try{const data=JSON.parse(await file.text());if(data.format!=='hangcha-stockcount-catalog'||!Array.isArray(data.items))throw Error('库存文件格式不正确，请用电脑工具生成');if(data.items.length>120000)throw Error('库存行数超出安全限制');if(!confirm(`导入 ${data.items.length} 条库存记录？将替换手机当前库存基准，但不删除已盘点数据。`))return;const tx=db.transaction(['catalog','metadata'],'readwrite');tx.objectStore('catalog').clear();data.items.forEach((r,i)=>tx.objectStore('catalog').put({key:i,erp:String(r.erp||''),partNo:String(r.partNo||''),name:String(r.name||''),location:String(r.location||'').trim().toUpperCase(),locations:Array.isArray(r.locations)?r.locations.map(x=>String(x).trim().toUpperCase()):[],bookQty:r.bookQty??null,referenceDimensions:String(r.referenceDimensions||''),referenceWeight:String(r.referenceWeight||'')}));tx.objectStore('metadata').put({key:'catalogName',value:file.name});tx.objectStore('metadata').put({key:'snapshotId',value:data.snapshotId||''});await new Promise((res,rej)=>{tx.oncomplete=res;tx.onerror=()=>rej(tx.error)});await load();showToast('库存基准已缓存在手机中，可离线联想')}catch(e){alert('导入失败：'+e.message)}}
-async function init(){try{db=await openDB()}catch(e){alert('无法打开手机本地数据库（IndexedDB）。请确认不是无痕浏览，并在普通 Safari/Chrome 中重试。错误：'+(e?.message||e));return}try{await load()}catch(e){console.error('StockCount initialization failed:',e);alert('盘库 App 初始化失败（不一定是 IndexedDB 问题），请先备份已有记录，再检查版本或联系管理员。错误：'+(e?.message||e));return}for(const el of document.querySelectorAll('nav button'))el.addEventListener('click',()=>go(el.dataset.view));$('start').onclick=startNew;$('catalogFile').onchange=e=>importCatalog(e.target.files[0]);$('nextBtn').onclick=next;$('completeShelf').onclick=completeShelf;$('skipBtn').onclick=()=>{if(step===STAGE.measure){for(const k of ['lengthCm','widthCm','heightCm','weightKg'])form[k]='';step=STAGE.qty;renderStep()}else stopLocation()};$('backBtn').onclick=backStep;$('changeFloor').onclick=()=>beginTempEdit('floor');for(const id of ['exportHome','exportHistory','exportSettings'])$(id).onclick=exportRecords;$('persistBtn').onclick=async()=>{if(!navigator.storage?.persist){$('persistStatus').textContent='当前浏览器不支持存储持久化请求';return}const yes=await navigator.storage.persist();$('persistStatus').textContent=yes?'浏览器已允许持久化存储（仍建议备份）':'浏览器未授予持久化，请频繁导出备份'};$('clearRecords').onclick=async()=>{if(!confirm('危险：这将删除本机全部盘点记录。确定已经备份到电脑？'))return;if(prompt('再次输入 DELETE 确认')!=='DELETE')return;const tx=db.transaction(['records','shelves'],'readwrite');tx.objectStore('records').clear();tx.objectStore('shelves').clear();await new Promise((r,j)=>{tx.oncomplete=r;tx.onerror=j});await load();showToast('本机盘点记录已清空')};$('worker').addEventListener('change',()=>localStorage.setItem('worker',$('worker').value.trim()));$('session').addEventListener('change',()=>localStorage.setItem('session',$('session').value.trim()));document.addEventListener('focusin',e=>noteInputFocus(e.target));document.addEventListener('keyup',e=>noteInputFocus(e.target));document.addEventListener('selectionchange',()=>noteInputFocus(document.activeElement));document.addEventListener('input',e=>{noteInputFocus(e.target);if($('count').classList.contains('active')){updateLocationView();scheduleDraftSave()}});document.addEventListener('change',()=>{if($('count').classList.contains('active'))scheduleDraftSave()});document.addEventListener('pagehide',()=>{if(db)persistDraft()});document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&db)persistDraft()});if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});}
+async function init(){try{db=await openDB()}catch(e){alert('无法打开手机本地数据库（IndexedDB）。请确认不是无痕浏览，并在普通 Safari/Chrome 中重试。错误：'+(e?.message||e));return}try{await load()}catch(e){console.error('StockCount initialization failed:',e);alert('盘库 App 初始化失败（不一定是 IndexedDB 问题），请先备份已有记录，再检查版本或联系管理员。错误：'+(e?.message||e));return}for(const el of document.querySelectorAll('nav button'))el.addEventListener('click',()=>go(el.dataset.view));$('start').onclick=startNew;$('catalogFile').onchange=e=>importCatalog(e.target.files[0]);$('nextBtn').onclick=next;$('completeShelf').onclick=completeShelf;$('skipBtn').onclick=()=>{if(step===STAGE.measure){for(const k of ['lengthCm','widthCm','heightCm','weightKg'])form[k]='';step=STAGE.qty;renderStep()}else stopLocation()};$('backBtn').onclick=backStep;$('changeFloor').onclick=()=>switchTempEdit('floor');for(const id of ['exportHome','exportHistory','exportSettings'])$(id).onclick=exportRecords;$('persistBtn').onclick=async()=>{if(!navigator.storage?.persist){$('persistStatus').textContent='当前浏览器不支持存储持久化请求';return}const yes=await navigator.storage.persist();$('persistStatus').textContent=yes?'浏览器已允许持久化存储（仍建议备份）':'浏览器未授予持久化，请频繁导出备份'};$('clearRecords').onclick=async()=>{if(!confirm('危险：这将删除本机全部盘点记录。确定已经备份到电脑？'))return;if(prompt('再次输入 DELETE 确认')!=='DELETE')return;const tx=db.transaction(['records','shelves'],'readwrite');tx.objectStore('records').clear();tx.objectStore('shelves').clear();await new Promise((r,j)=>{tx.oncomplete=r;tx.onerror=j});await load();showToast('本机盘点记录已清空')};$('worker').addEventListener('change',()=>localStorage.setItem('worker',$('worker').value.trim()));$('session').addEventListener('change',()=>localStorage.setItem('session',$('session').value.trim()));document.addEventListener('focusin',e=>noteInputFocus(e.target));document.addEventListener('keyup',e=>noteInputFocus(e.target));document.addEventListener('selectionchange',()=>noteInputFocus(document.activeElement));document.addEventListener('input',e=>{noteInputFocus(e.target);if($('count').classList.contains('active')){updateLocationView();scheduleDraftSave()}});document.addEventListener('change',()=>{if($('count').classList.contains('active'))scheduleDraftSave()});document.addEventListener('pagehide',()=>{if(db)persistDraft()});document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&db)persistDraft()});if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});}
 init();
