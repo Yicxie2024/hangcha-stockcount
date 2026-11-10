@@ -1,4 +1,4 @@
-/* Hangcha StockCount Offline v0.4.2: one-tap node changes; swipe-to-edit/delete with tombstones. */
+/* Hangcha StockCount Offline v0.4.3: fixed-choice nodes do not show manual confirmation button. */
 'use strict';
 const DB_NAME='hangcha-stockcount-01'; let db;let catalog=[];let meta={};let records=[];
 const STEPS=['floor','col','row','level','slot','partition','suffix','part','measure','qty','note'];
@@ -442,12 +442,15 @@ function renderStep(){
   if(tempEdit)$('skipBtn').style.display='none';
   $('skipBtn').classList.toggle('location-finish',!tempEdit&&step>=STAGE.row&&step<=STAGE.suffix);
   $('nextBtn').textContent=step===STAGE.note?(editId?'✓ 保存记录并返回列表':'✓ 保存本条，开始下一条'):step===STAGE.suffix?'确认库位 →':step===STAGE.measure?'下一步：数量 →':'继续 →';
+  // Fixed-choice nodes commit immediately when tapped (including temporary edits),
+  // so showing a redundant 'manual input confirmation' button is misleading.
+  const fixedChoiceNode=step>=STAGE.floor&&step<=STAGE.partition;
   if(tempEdit)$('nextBtn').textContent='确认手动输入';
   // Full-record saves have a single prominent style, distinct from draft-only edits.
   $('nextBtn').classList.toggle('record-save',!tempEdit&&step===STAGE.note);
   $('nextBtn').classList.toggle('node-apply',Boolean(tempEdit));
   $('backBtn').classList.toggle('edit-cancel',Boolean(tempEdit));
-  $('nextBtn').style.display=(tempEdit||step>STAGE.suffix)?'flex':'none';
+  $('nextBtn').style.display=(tempEdit&&!fixedChoiceNode||step>STAGE.suffix)?'flex':'none';
   $('nextBtn').disabled=false;
   $('completeShelf').style.display=(!tempEdit&&step>=STAGE.row&&step<=STAGE.suffix&&form.col&&form.row)?'inline-flex':'none';
   if(key==='floor'){
