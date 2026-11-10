@@ -1,4 +1,4 @@
-/* Hangcha StockCount Offline v0.4.3: fixed-choice nodes do not show manual confirmation button. */
+/* Hangcha StockCount Offline v0.4.4: swipe to discard unfinished count drafts, unified 3s undo. */
 'use strict';
 const DB_NAME='hangcha-stockcount-01'; let db;let catalog=[];let meta={};let records=[];
 const STEPS=['floor','col','row','level','slot','partition','suffix','part','measure','qty','note'];
@@ -308,14 +308,14 @@ function backStep(){
   }
   step--;renderStep();
 }
-function showToast(str){const el=$('toast');el.textContent=str;el.classList.add('show');clearTimeout(showToast.t);showToast.t=setTimeout(()=>el.classList.remove('show'),3300)}
+function showToast(str){const el=$('toast');el.textContent=str;el.classList.add('show');clearTimeout(showToast.t);showToast.t=setTimeout(()=>el.classList.remove('show'),3000)}
 function showSavedFeedback(location,qty,revised=false){const el=$('saveFeedback');if(!el)return;$('savedLocation').textContent=location+(revised?' · 修改已保存':' · 保存成功');$('savedQuantity').textContent=qty+' 件';el.classList.remove('show');void el.offsetWidth;el.classList.add('show');clearTimeout(showSavedFeedback.t);showSavedFeedback.t=setTimeout(()=>el.classList.remove('show'),1900)}
 function openDB(){return new Promise((resolve,reject)=>{const q=indexedDB.open(DB_NAME,2);q.onupgradeneeded=()=>{const d=q.result;if(!d.objectStoreNames.contains('records'))d.createObjectStore('records',{keyPath:'id'});if(!d.objectStoreNames.contains('catalog'))d.createObjectStore('catalog',{keyPath:'key'});if(!d.objectStoreNames.contains('metadata'))d.createObjectStore('metadata',{keyPath:'key'});if(!d.objectStoreNames.contains('shelves'))d.createObjectStore('shelves',{keyPath:'id'})};q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)})}
 function req(store,method,...args){return new Promise((resolve,reject)=>{const tx=db.transaction(store,'readwrite');const op=tx.objectStore(store)[method](...args);op.onsuccess=()=>resolve(op.result);op.onerror=()=>reject(op.error)})}
 function all(store){return req(store,'getAll')}
 async function load(){records=(await all('records')).filter(r=>!r.deleted);catalog=await all('catalog');shelves=await all('shelves');const m=await all('metadata');meta=Object.fromEntries(m.map(x=>[x.key,x.value]));$('worker').value=safeLocalStorage.getItem('worker')||'';$('session').value=safeLocalStorage.getItem('session')||new Date().getFullYear()+'年度盘库';persistedDraft=meta.activeDraft||null;lastLocation=meta.lastLocation||null;workingFloor=validFloor(meta.workingFloor)?Number(meta.workingFloor):(validFloor(lastLocation?.floor)?Number(lastLocation.floor):floorFromLevel(lastLocation?.level));refreshStats()}
 function refreshStats(){const stats={shelfCount:shelves.filter(x=>!x.deleted).length,recordCount:records.length,catalogCount:catalog.length,catalogInfo:meta.catalogName?`${meta.catalogName} · ${catalog.length} 行 · ${meta.snapshotId||''}`:'尚未导入库存基准'};for(const [id,value] of Object.entries(stats)){const el=$(id);if(el)el.textContent=value;else console.warn('Missing optional UI element:',id)}}
-function go(view){if(tempEdit&&view!=='count'){showToast('请先确认或返回临时修改');return}for(const e of document.querySelectorAll('.view'))e.classList.toggle('active',e.id===view);for(const e of document.querySelectorAll('nav button'))e.classList.toggle('active',e.dataset.view===view);if(view==='history'){renderHistory();renderShelves()}if(view==='count'){renderStep();scheduleDraftSave()}window.scrollTo({top:0,behavior:'instant'})}
+function go(view){revealDraftSwipe(false);if(tempEdit&&view!=='count'){showToast('请先确认或返回临时修改');return}for(const e of document.querySelectorAll('.view'))e.classList.toggle('active',e.id===view);for(const e of document.querySelectorAll('nav button'))e.classList.toggle('active',e.dataset.view===view);if(view==='history'){renderHistory();renderShelves()}if(view==='count'){renderStep();scheduleDraftSave()}window.scrollTo({top:0,behavior:'instant'})}
 function pad2(s){const n=String(s).trim();return /^\d{1,2}$/.test(n)?n.padStart(2,'0'):n}
 function canonical(x){const base=(x.col||'')+(x.row||'')+(x.level||'')+(x.slot||'');return base+(x.partition?'-'+x.partition:'')+(x.suffix?'-'+x.suffix:'')}
 function prefix(x){return (x.col||'')+(x.row||'')+(x.level||'')+(x.slot||'')}
@@ -424,6 +424,10 @@ function validMeasurements(){for(const [field,label] of [['lengthCm','长'],['wi
  if(!/^(?:\d+(?:[.,]\d+)?|[.,]\d+)$/.test(text)||!Number.isFinite(measurementValue(text))||measurementValue(text)<=0||measurementValue(text)>1000000){showToast(label+'请输入大于0的数字，或留空');return false}
  }return true}
 function renderStep(){
+  revealDraftSwipe(false);
+  const discardButton=$('discardDraftBtn'),swipeMore=$('draftSwipeMore');
+  if(discardButton){discardButton.textContent=editId?'放弃修改':'删除草稿';discardButton.setAttribute('aria-label',editId?'放弃本次未保存的修改':'删除当前未保存的盘点草稿')}
+  if(swipeMore)swipeMore.setAttribute('aria-label',editId?'展开放弃修改操作':'展开删除当前草稿操作');
   if(!tempEdit)maxStageReached=Math.max(maxStageReached,step);
   const key=STEPS[step];
   document.body.classList.toggle('temp-edit',Boolean(tempEdit));
@@ -654,7 +658,105 @@ function startNew(){
  go('count');scheduleDraftSave();
 }
 
-let openSwipeRecord=null, deletionUndo=null;
+const UNDO_DURATION_MS=3000;
+let openSwipeRecord=null, pendingUndo=null, undoOfferTimer=null, draftDiscardBusy=false;
+let draftSwipeOpen=false;
+function revealDraftSwipe(open){
+ const shell=$('draftSwipe'),button=$('draftSwipeMore');
+ draftSwipeOpen=Boolean(open);
+ if(shell)shell.classList.toggle('swipe-open',draftSwipeOpen);
+ if(button)button.setAttribute('aria-expanded',String(draftSwipeOpen));
+}
+function offerUndo(message,undo){
+ clearTimeout(undoOfferTimer);
+ const bar=$('undoDeletion');
+ pendingUndo={undo};
+ if(bar){$('undoDeletionInfo').textContent=message;bar.hidden=false;document.body.classList.add('undo-visible')}
+ // Every undo offer has exactly the same three-second lifetime.
+ undoOfferTimer=setTimeout(()=>{pendingUndo=null;if(bar)bar.hidden=true;document.body.classList.remove('undo-visible')},UNDO_DURATION_MS);
+}
+async function runUndo(){
+ const offer=pendingUndo;
+ if(!offer)return;
+ pendingUndo=null;clearTimeout(undoOfferTimer);
+ const bar=$('undoDeletion');if(bar)bar.hidden=true;
+ document.body.classList.remove('undo-visible');
+ try{await offer.undo()}catch(e){console.error('Undo failed',e);showToast('撤销失败：'+(e?.message||e))}
+}
+// The swipe target is limited to the current count card: never capture a
+// gesture beginning in an interactive field or horizontally scrolling pipeline.
+function initDraftSwipe(){
+ const card=$('draftSwipe'),front=card?.querySelector('.draft-swipe-front');
+ if(!card||!front)return;
+ let startX=0,startY=0,active=false;
+ front.addEventListener('touchstart',e=>{
+  active=false;
+  if(e.touches.length!==1||e.target.closest('button, input, textarea, select, .location-trail'))return;
+  startX=e.touches[0].clientX;startY=e.touches[0].clientY;active=true;
+ },{passive:true});
+ front.addEventListener('touchend',e=>{
+  if(!active||!e.changedTouches.length)return;active=false;
+  const dx=e.changedTouches[0].clientX-startX,dy=e.changedTouches[0].clientY-startY;
+  if(Math.abs(dx)>45&&Math.abs(dx)>Math.abs(dy)*1.2)revealDraftSwipe(dx<0);
+ },{passive:true});
+ front.addEventListener('touchcancel',()=>{active=false},{passive:true});
+ $('draftSwipeMore').addEventListener('click',()=>revealDraftSwipe(!draftSwipeOpen));
+ $('discardDraftBtn').addEventListener('click',discardCurrentDraft);
+}
+function snapshotCurrentDraft(){
+ return {form:clone(form),step,maxStageReached,partSearch,editId,
+         tempEdit:tempEdit?clone(tempEdit):null,focusBookmark:focusBookmark?clone(focusBookmark):null};
+}
+function restoreCurrentDraft(snapshot){
+ form=clone(snapshot.form);step=snapshot.step;maxStageReached=snapshot.maxStageReached;
+ partSearch=snapshot.partSearch;editId=snapshot.editId;
+ tempEdit=snapshot.tempEdit?clone(snapshot.tempEdit):null;
+ focusBookmark=snapshot.focusBookmark?clone(snapshot.focusBookmark):null;
+}
+function draftSignature(){return JSON.stringify({form,step,partSearch,editId,tempEdit});}
+// Wait for IDB transaction completion before declaring that a draft has been
+// discarded. This prevents a refresh from resurrecting the previous draft.
+function putDraftDurably(snapshot){
+ return new Promise((resolve,reject)=>{
+  const tx=db.transaction('metadata','readwrite');
+  tx.objectStore('metadata').put({key:'activeDraft',value:snapshot});
+  tx.oncomplete=()=>{persistedDraft=snapshot;resolve()};
+  tx.onerror=()=>reject(tx.error||new Error('草稿写入失败'));
+  tx.onabort=()=>reject(tx.error||new Error('草稿写入被中止'));
+ });
+}
+async function discardCurrentDraft(){
+ if(draftDiscardBusy||savingRecord)return;
+ draftDiscardBusy=true;revealDraftSwipe(false);
+ if(!editId&&!tempEdit&&!partSearch&&!['col','row','level','slot','partition','suffix','erp','partNo','partKey','lengthCm','widthCm','heightCm','weightKg','qty','note'].some(k=>String(form[k]??'').trim())){
+  draftDiscardBusy=false;showToast('当前没有未完成的盘点项');return;
+ }
+ const before=snapshotCurrentDraft();
+ const wasEditing=Boolean(before.editId);
+ const initialFloor=Number(before.tempEdit?.originalForm?.floor)||Number(before.form.floor)||workingFloor||0;
+ clearTimeout(draftTimer);clearTimeout(searchTimer);
+ form=empty();form.floor=validFloor(initialFloor)?Number(initialFloor):0;
+ step=form.floor?STAGE.col:STAGE.floor;maxStageReached=0;
+ editId=null;tempEdit=null;partSearch='';focusBookmark=null;
+ const emptyDraft=savedDraft(),emptySignature=draftSignature();
+ try{
+  await putDraftDurably(emptyDraft);
+  if(wasEditing)go('history');else{go('count');renderStep()}
+  offerUndo(wasEditing?'已放弃本次修改，原记录不变':'当前草稿已删除',async()=>{
+   if(draftSignature()!==emptySignature){showToast('已有新的输入，未覆盖当前草稿');return}
+   restoreCurrentDraft(before);
+   try{await putDraftDurably(savedDraft())}catch(e){showToast('草稿已恢复到页面，但本地备份失败');throw e}
+   go('count');renderStep();
+   if(before.focusBookmark)restoreReturnPoint(before.focusBookmark);
+   showToast('草稿已恢复');
+  });
+ }catch(e){
+  restoreCurrentDraft(before);
+  go('count');renderStep();
+  showToast('删除失败，草稿仍保留：'+(e?.message||e));
+ }finally{draftDiscardBusy=false}
+}
+
 function revealRecordSwipe(row,open){
  if(openSwipeRecord&&openSwipeRecord!==row){openSwipeRecord.classList.remove('swipe-open');openSwipeRecord=null}
  row.classList.toggle('swipe-open',Boolean(open));
@@ -690,22 +792,13 @@ function laterTimestamp(previous){
  const prior=Date.parse(previous||'');return new Date(Math.max(Date.now(),Number.isFinite(prior)?prior+1:0)).toISOString();
 }
 function showDeletionUndo(tombstone){
- deletionUndo={id:tombstone.id,updatedAt:tombstone.updatedAt};
- const bar=$('undoDeletion');if(!bar)return;
- const info=$('undoDeletionInfo');if(info)info.textContent=`已删除 ${tombstone.location} · ${tombstone.partNo||tombstone.erp||'零件'}`;
- bar.hidden=false;clearTimeout(showDeletionUndo.timer);
- showDeletionUndo.timer=setTimeout(()=>{bar.hidden=true;deletionUndo=null},6500);
-}
-async function undoRecordDeletion(){
- if(!deletionUndo)return;
- const saved=deletionUndo;deletionUndo=null;
- const bar=$('undoDeletion');if(bar)bar.hidden=true;clearTimeout(showDeletionUndo.timer);
- try{
+ const saved={id:tombstone.id,updatedAt:tombstone.updatedAt};
+ offerUndo(`已删除 ${tombstone.location} · ${tombstone.partNo||tombstone.erp||'零件'}`,async()=>{
   const r=await req('records','get',saved.id);
   if(!r||!r.deleted||r.updatedAt!==saved.updatedAt){showToast('记录状态已变化，无法撤销');return}
   await req('records','put',{...r,deleted:false,updatedAt:laterTimestamp(r.updatedAt)});
   await load();renderHistory();showToast('删除已撤销');
- }catch(e){console.error(e);showToast('撤销失败：'+(e.message||e))}
+ });
 }
 const deletionInProgress=new Set();
 async function deleteRecord(r){
@@ -724,5 +817,5 @@ function currentShelf(){const c=form.col||'';const r=form.row||'';return c&&r?c+
 async function completeShelf(){const shelf=currentShelf();if(!shelf){showToast('请先选择列和货架号');return}const worker=$('worker').value.trim();const session=$('session').value.trim();if(!worker){showToast('请先填写盘点人');return}if(!confirm(`确认 ${currentFloor()}F · ${shelf} 的盘点已完成？\n这只是完成标记，不代表所有货物数量正确，也不阻止后续补盘。`))return;const id=crypto.randomUUID(),now=new Date().toISOString();await req('shelves','put',{id,shelf,physicalFloor:currentFloor(),worker,session,snapshotId:meta.snapshotId||'',completedAt:now,updatedAt:now,deleted:false});await load();showToast(`${currentFloor()}F · ${shelf} 已标记完成，导出时会一并提交`)}
 function renderShelves(){const list=$('shelfList');if(!list)return;list.replaceChildren();for(const t of shelves.filter(x=>!x.deleted).sort((a,b)=>b.completedAt.localeCompare(a.completedAt)).slice(0,30)){const d=element('div',{class:'rec'});d.append(element('strong',{},`${t.physicalFloor?t.physicalFloor+'F · ':''}${t.shelf}`),element('p',{class:'mini muted'},`${t.worker} · ${t.session} · ${t.completedAt.slice(0,16).replace('T',' ')}`));d.append(element('button',{class:'tiny',onclick:async()=>{if(!confirm(`撤销 ${t.shelf} 的已完成标记？`))return;await req('shelves','put',{...t,deleted:true,updatedAt:new Date().toISOString()});await load();renderShelves()}},'撤销标记'));list.append(d)}}
 async function importCatalog(file){if(!file)return;try{const data=JSON.parse(await file.text());if(data.format!=='hangcha-stockcount-catalog'||!Array.isArray(data.items))throw Error('库存文件格式不正确，请用电脑工具生成');if(data.items.length>120000)throw Error('库存行数超出安全限制');if(!confirm(`导入 ${data.items.length} 条库存记录？将替换手机当前库存基准，但不删除已盘点数据。`))return;const tx=db.transaction(['catalog','metadata'],'readwrite');tx.objectStore('catalog').clear();data.items.forEach((r,i)=>tx.objectStore('catalog').put({key:i,erp:String(r.erp||''),partNo:String(r.partNo||''),name:String(r.name||''),location:String(r.location||'').trim().toUpperCase(),locations:Array.isArray(r.locations)?r.locations.map(x=>String(x).trim().toUpperCase()):[],bookQty:r.bookQty??null,referenceDimensions:String(r.referenceDimensions||''),referenceWeight:String(r.referenceWeight||'')}));tx.objectStore('metadata').put({key:'catalogName',value:file.name});tx.objectStore('metadata').put({key:'snapshotId',value:data.snapshotId||''});await new Promise((res,rej)=>{tx.oncomplete=res;tx.onerror=()=>rej(tx.error)});await load();showToast('库存基准已缓存在手机中，可离线联想')}catch(e){alert('导入失败：'+e.message)}}
-async function init(){try{db=await openDB()}catch(e){alert('无法打开手机本地数据库（IndexedDB）。请确认不是无痕浏览，并在普通 Safari/Chrome 中重试。错误：'+(e?.message||e));return}try{await load()}catch(e){console.error('StockCount initialization failed:',e);alert('盘库 App 初始化失败（不一定是 IndexedDB 问题），请先备份已有记录，再检查版本或联系管理员。错误：'+(e?.message||e));return}for(const el of document.querySelectorAll('nav button'))el.addEventListener('click',()=>go(el.dataset.view));$('start').onclick=startNew;$('undoDelete').onclick=undoRecordDeletion;document.addEventListener('pointerdown',ev=>{if(openSwipeRecord&&!ev.target.closest('.swipe-record'))revealRecordSwipe(openSwipeRecord,false)});$('catalogFile').onchange=e=>importCatalog(e.target.files[0]);$('nextBtn').onclick=next;$('finishBtn').onclick=saveDirect;$('completeShelf').onclick=completeShelf;$('skipBtn').onclick=()=>{if(step===STAGE.measure){step=STAGE.qty;renderStep()}else stopLocation()};$('backBtn').onclick=backStep;$('changeFloor').onclick=()=>switchTempEdit('floor');for(const id of ['exportHome','exportHistory','exportSettings'])$(id).onclick=exportRecords;$('persistBtn').onclick=async()=>{if(!navigator.storage?.persist){$('persistStatus').textContent='当前浏览器不支持存储持久化请求';return}const yes=await navigator.storage.persist();$('persistStatus').textContent=yes?'浏览器已允许持久化存储（仍建议备份）':'浏览器未授予持久化，请频繁导出备份'};$('clearRecords').onclick=async()=>{if(!confirm('危险：这将删除本机全部盘点记录。确定已经备份到电脑？'))return;if(prompt('再次输入 DELETE 确认')!=='DELETE')return;const tx=db.transaction(['records','shelves'],'readwrite');tx.objectStore('records').clear();tx.objectStore('shelves').clear();await new Promise((r,j)=>{tx.oncomplete=r;tx.onerror=j});await load();showToast('本机盘点记录已清空')};$('worker').addEventListener('change',()=>safeLocalStorage.setItem('worker',$('worker').value.trim()));$('session').addEventListener('change',()=>safeLocalStorage.setItem('session',$('session').value.trim()));document.addEventListener('focusin',e=>noteInputFocus(e.target));document.addEventListener('keyup',e=>noteInputFocus(e.target));document.addEventListener('selectionchange',()=>noteInputFocus(document.activeElement));document.addEventListener('input',e=>{noteInputFocus(e.target);if($('count').classList.contains('active')){updateLocationView();refreshSaveAction();scheduleDraftSave()}});document.addEventListener('change',()=>{if($('count').classList.contains('active')){refreshSaveAction();scheduleDraftSave()}});document.addEventListener('pagehide',()=>{if(db)persistDraft()});document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&db)persistDraft()});if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});}
+async function init(){try{db=await openDB()}catch(e){alert('无法打开手机本地数据库（IndexedDB）。请确认不是无痕浏览，并在普通 Safari/Chrome 中重试。错误：'+(e?.message||e));return}try{await load()}catch(e){console.error('StockCount initialization failed:',e);alert('盘库 App 初始化失败（不一定是 IndexedDB 问题），请先备份已有记录，再检查版本或联系管理员。错误：'+(e?.message||e));return}for(const el of document.querySelectorAll('nav button'))el.addEventListener('click',()=>go(el.dataset.view));$('start').onclick=startNew;$('undoDelete').onclick=runUndo;initDraftSwipe();document.addEventListener('pointerdown',ev=>{if(openSwipeRecord&&!ev.target.closest('.swipe-record'))revealRecordSwipe(openSwipeRecord,false);if(draftSwipeOpen&&!ev.target.closest('#draftSwipe'))revealDraftSwipe(false)});$('catalogFile').onchange=e=>importCatalog(e.target.files[0]);$('nextBtn').onclick=next;$('finishBtn').onclick=saveDirect;$('completeShelf').onclick=completeShelf;$('skipBtn').onclick=()=>{if(step===STAGE.measure){step=STAGE.qty;renderStep()}else stopLocation()};$('backBtn').onclick=backStep;$('changeFloor').onclick=()=>switchTempEdit('floor');for(const id of ['exportHome','exportHistory','exportSettings'])$(id).onclick=exportRecords;$('persistBtn').onclick=async()=>{if(!navigator.storage?.persist){$('persistStatus').textContent='当前浏览器不支持存储持久化请求';return}const yes=await navigator.storage.persist();$('persistStatus').textContent=yes?'浏览器已允许持久化存储（仍建议备份）':'浏览器未授予持久化，请频繁导出备份'};$('clearRecords').onclick=async()=>{if(!confirm('危险：这将删除本机全部盘点记录。确定已经备份到电脑？'))return;if(prompt('再次输入 DELETE 确认')!=='DELETE')return;const tx=db.transaction(['records','shelves'],'readwrite');tx.objectStore('records').clear();tx.objectStore('shelves').clear();await new Promise((r,j)=>{tx.oncomplete=r;tx.onerror=j});await load();showToast('本机盘点记录已清空')};$('worker').addEventListener('change',()=>safeLocalStorage.setItem('worker',$('worker').value.trim()));$('session').addEventListener('change',()=>safeLocalStorage.setItem('session',$('session').value.trim()));document.addEventListener('focusin',e=>noteInputFocus(e.target));document.addEventListener('keyup',e=>noteInputFocus(e.target));document.addEventListener('selectionchange',()=>noteInputFocus(document.activeElement));document.addEventListener('input',e=>{noteInputFocus(e.target);if($('count').classList.contains('active')){updateLocationView();refreshSaveAction();scheduleDraftSave()}});document.addEventListener('change',()=>{if($('count').classList.contains('active')){refreshSaveAction();scheduleDraftSave()}});document.addEventListener('pagehide',()=>{if(db)persistDraft()});document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&db)persistDraft()});if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});}
 init();

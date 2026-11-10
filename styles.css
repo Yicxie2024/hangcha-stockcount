@@ -189,3 +189,14 @@ body.temp-edit #count .bottom-actions #nextBtn.node-apply:active{background:#dbe
 .undo-deletion[hidden]{display:none}
 .undo-deletion button{border:1px solid #b8d0e1;color:#fff;background:#315a77;border-radius:9px;padding:9px 11px;min-height:39px;white-space:nowrap;font-size:13px;font-weight:800;cursor:pointer}
 @media(prefers-reduced-motion:reduce){#history .swipe-front{transition:none}}
+
+/* v0.4.4: one-hand swipe to discard current UNSAVED draft (not a saved record). */
+#count .draft-swipe{position:relative;overflow:hidden;border-radius:15px;margin:10px 0 12px;isolation:isolate;touch-action:pan-y;background:#c34c41}
+#count .draft-swipe-actions{position:absolute;inset:0 0 0 auto;display:flex;justify-content:flex-end;width:94px;z-index:0}
+#count .draft-swipe-actions button{background:#c34c41;border:0;color:white;width:94px;padding:10px;font-size:14px;font-weight:800;touch-action:manipulation;cursor:pointer}
+#count .draft-swipe-front{position:relative;z-index:1;background:#f9fcff;margin:0;transform:translate3d(0,0,0);transition:transform .19s ease;will-change:transform;touch-action:pan-y}
+#count .draft-swipe.swipe-open .draft-swipe-front{transform:translate3d(-94px,0,0)}
+#count .draft-swipe-more{font-size:21px;font-weight:750;color:#56738a;background:#e7f0f7;border:1px solid #d8e5ed;border-radius:9px;min-width:35px;min-height:39px;cursor:pointer;flex:none;line-height:1}
+#count .draft-swipe-more:focus-visible,#count .draft-swipe-actions button:focus-visible{outline:3px solid #f2a257;outline-offset:-3px}
+body.undo-visible #toast{bottom:calc(146px + env(safe-area-inset-bottom,0px))}
+@media(prefers-reduced-motion:reduce){#count .draft-swipe-front{transition:none}}
