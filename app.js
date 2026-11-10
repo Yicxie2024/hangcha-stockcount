@@ -1,4 +1,4 @@
-/* Hangcha StockCount Offline v0.4.1: clear save-vs-apply labels and action hierarchy. */
+/* Hangcha StockCount Offline v0.4.2: one-tap node changes; swipe-to-edit/delete with tombstones. */
 'use strict';
 const DB_NAME='hangcha-stockcount-01'; let db;let catalog=[];let meta={};let records=[];
 const STEPS=['floor','col','row','level','slot','partition','suffix','part','measure','qty','note'];
@@ -283,7 +283,7 @@ function renderTrail(){
 }
 async function chooseFloor(f){
   if(!validFloor(f))return;
-  if(tempEdit){form.floor=Number(f);renderStep();return;}
+  if(tempEdit){form.floor=Number(f);exitTempEdit(true);return;}
   const n=Number(f), old=currentFloor();
   if(old!==n){
     // A physical floor has 4 rack levels; changing floors cannot retain a stale level.
@@ -343,8 +343,8 @@ function candidateRows(){
 function uniqueParts(rows){let d=new Map();for(const r of rows){const k=r.erp+'|'+r.partNo;if(!d.has(k))d.set(k,r)}return [...d.values()]}
 function element(tag,props={},text){const e=document.createElement(tag);for(const[k,v]of Object.entries(props)){if(k==='class')e.className=v;else if(k==='onclick')e.addEventListener('click',v);else e.setAttribute(k,v)}if(text!==undefined)e.textContent=text;return e}
 function blockTitle(name,hint=''){const d=element('div');d.append(element('h2',{class:'step-title'},name));if(hint)d.append(element('p',{class:'step-hint'},hint));return d}
-function keyGrid(values,selected,fn,three=false){const d=element('div',{class:'keys'+(three?' three':'')});for(const s of values){const b=element('button',{class:'key'+(s===selected?' selected':''),type:'button',onclick:()=>{fn(s);if(!tempEdit&&step>=STAGE.col&&step<=STAGE.partition)step++;renderStep()}},s);d.append(b)}return d}
-function entry(current,placeholder,handler,type='text',fieldKey=''){const d=element('div',{class:'entry-block'});const x=element('input',{placeholder,type,autocapitalize:'off',autocomplete:'off'});if(fieldKey)x.dataset.draftField=fieldKey;x.value=current;x.addEventListener('input',()=>{handler(x.value);updateLocationView();if(step===STAGE.suffix&&!tempEdit)$('skipBtn').textContent=form.suffix?'✓ 确认库位':'✓ 库位到此结束'});d.append(x);if(fieldKey){d.append(clearAction('清空'+({suffix:'备注号',erp:'ERP No.',partNo:'Part No.',qty:'数量'}[fieldKey]||'内容'),()=>{x.value='';handler('');updateLocationView();refreshSaveAction();scheduleDraftSave();x.focus()}))}return d}
+function keyGrid(values,selected,fn,three=false){const d=element('div',{class:'keys'+(three?' three':'')});for(const s of values){const b=element('button',{class:'key'+(s===selected?' selected':''),type:'button',onclick:()=>{fn(s);if(tempEdit){exitTempEdit(true);return}if(step>=STAGE.col&&step<=STAGE.partition)step++;renderStep()}},s);d.append(b)}return d}
+function entry(current,placeholder,handler,type='text',fieldKey=''){const d=element('div',{class:'entry-block'});const x=element('input',{placeholder,type,autocapitalize:'off',autocomplete:'off'});if(fieldKey)x.dataset.draftField=fieldKey;x.value=current;x.addEventListener('input',()=>{handler(x.value);updateLocationView();if(step===STAGE.suffix&&!tempEdit)$('skipBtn').textContent=form.suffix?'✓ 确认库位':'✓ 库位到此结束'});d.append(x);if(fieldKey){d.append(clearAction('清空'+({suffix:'备注号',erp:'ERP No.',partNo:'Part No.',qty:'数量'}[fieldKey]||'内容'),()=>{x.value='';handler('');if(tempEdit){exitTempEdit(true);return}updateLocationView();refreshSaveAction();scheduleDraftSave();x.focus()}))}return d}
 function clearAction(text,handler,detail=''){
  const wrap=element('div',{class:'clear-wrap'});
  const b=element('button',{class:'clear-field',type:'button',onclick:handler});
@@ -355,7 +355,7 @@ function clearAction(text,handler,detail=''){
 }
 function clearCurrentLocationField(field){
  setLocationField(field,'');
- renderStep();
+ if(tempEdit)exitTempEdit(true);else renderStep();
 }
 function selection(label,detail,selected,fn){const e=element('div',{class:'choice'+(selected?' selected':''),onclick:fn});const circle=element('span',{},selected?'◉':'◯');circle.style.color=selected?'#2777b2':'#8a99a5';const txt=element('div');txt.append(element('b',{},label));if(detail)txt.append(element('small',{},detail));e.append(circle,txt);return e}
 function normalizeCode(v){return String(v??'').toUpperCase().replace(/[^A-Z0-9]/g,'')}
@@ -375,7 +375,7 @@ function selectPart(c){
  const changed=form.partKey!==(c.erp+'|'+c.partNo);
  form.partKey=c.erp+'|'+c.partNo;form.erp=c.erp||'';form.partNo=c.partNo||'';form.partName=c.name||'';
  if(changed&&!tempEdit&&['lengthCm','widthCm','heightCm','weightKg'].some(k=>form[k]!==''))showToast('零件已更换，请核对原有尺寸与重量');
- if(!tempEdit)step=STAGE.measure;renderStep();
+ if(tempEdit){exitTempEdit(true);return}step=STAGE.measure;renderStep();
 }
 function renderPartResults(host){
  if(!host||!host.isConnected)return;
@@ -442,7 +442,7 @@ function renderStep(){
   if(tempEdit)$('skipBtn').style.display='none';
   $('skipBtn').classList.toggle('location-finish',!tempEdit&&step>=STAGE.row&&step<=STAGE.suffix);
   $('nextBtn').textContent=step===STAGE.note?(editId?'✓ 保存记录并返回列表':'✓ 保存本条，开始下一条'):step===STAGE.suffix?'确认库位 →':step===STAGE.measure?'下一步：数量 →':'继续 →';
-  if(tempEdit)$('nextBtn').textContent='应用本项修改';
+  if(tempEdit)$('nextBtn').textContent='确认手动输入';
   // Full-record saves have a single prominent style, distinct from draft-only edits.
   $('nextBtn').classList.toggle('record-save',!tempEdit&&step===STAGE.note);
   $('nextBtn').classList.toggle('node-apply',Boolean(tempEdit));
@@ -514,7 +514,7 @@ function renderStep(){
   manual.append(element('label',{},'Part No.'));
   manual.append(entry(form.partNo,'Part No.',v=>{form.partNo=v.trim();form.partKey='';form.partName=''},'text','partNo'));
   a.append(manual);
-  if(form.erp||form.partNo||form.partKey)a.append(clearAction('清空已选零件',()=>{clearSelectedPart();renderStep();showToast('已清空临时零件选择，保存前需重新选定')}));
+  if(form.erp||form.partNo||form.partKey)a.append(clearAction('清空已选零件',()=>{clearSelectedPart();if(tempEdit){exitTempEdit(true);return}renderStep();showToast('已清空临时零件选择，保存前需重新选定')}));
  }
  if(key==='measure'){
   a.append(blockTitle('尺寸与重量（选填）'));
@@ -550,17 +550,16 @@ function renderStep(){
       if(idx<inputs.length-1)inputs[idx+1].focus();else{input.blur();if(!tempEdit)next()}
     });
     wrap.append(input);
-    const clear=element('button',{class:'measure-clear',type:'button','aria-label':`清空${label}`,onclick:()=>{form[field]='';input.value='';refreshSaveAction();scheduleDraftSave();input.focus()}},'× 清空');
+    const clear=element('button',{class:'measure-clear',type:'button','aria-label':`清空${label}`,onclick:()=>{form[field]='';input.value='';if(tempEdit){exitTempEdit(true);return}refreshSaveAction();scheduleDraftSave();input.focus()}},'× 清空');
     wrap.append(clear);return wrap;
   }
   for(const [field,label] of [['lengthCm','长'],['widthCm','宽'],['heightCm','高']])dimGrid.append(numericField(field,label));
   dims.append(dimGrid);weightBox.append(numericField('weightKg','重量',true));
   if(!tempEdit||tempEdit.target==='dimensions')a.append(dims);
   if(!tempEdit||tempEdit.target==='weight')a.append(weightBox);
-  if(!tempEdit||tempEdit.target==='dimensions')a.append(clearAction('清空全部尺寸',()=>{for(const k of ['lengthCm','widthCm','heightCm'])form[k]='';renderStep()}));
  }
-if(key==='qty'){a.append(blockTitle('实际数量','0 表示已检查但无货'));a.append(entry(form.qty,'数量，例如 12',v=>form.qty=v,'number','qty'));const plus=element('div',{class:'keys three'});for(const n of ['1','2','3','4','5','6','7','8','9','清除','0','⌫']){plus.append(element('button',{class:'key',onclick:()=>{if(n==='清除')form.qty='';else if(n==='⌫')form.qty=form.qty.slice(0,-1);else form.qty+=n;renderStep()}},n))}a.append(plus)}
-if(key==='note'){a.append(blockTitle('备注（可选）'));const t=element('textarea',{placeholder:'输入备注，不需要可留空',rows:'4'});t.value=form.note;t.dataset.draftField='note';t.addEventListener('input',()=>form.note=t.value);a.append(t);a.append(clearAction('清空备注',()=>{form.note='';t.value='';refreshSaveAction();scheduleDraftSave();t.focus()}));const s=element('div',{class:'panel'});const dims=['lengthCm','widthCm','heightCm'].map(k=>form[k]||'—').join(' × ');s.append(element('h3',{},'保存前核对'),element('p',{class:'mini'},`库位：${canonical(form)}\nPart No.：${form.partNo||'—'}\nERP：${form.erp||'—'}\n尺寸：${dims} cm · 重量：${form.weightKg||'—'} kg\n数量：${form.qty}`));s.style.whiteSpace='pre-line';if(!tempEdit)a.append(s)}
+if(key==='qty'){a.append(blockTitle('实际数量','0 表示已检查但无货'));a.append(entry(form.qty,'数量，例如 12',v=>form.qty=v,'number','qty'));const plus=element('div',{class:'keys three'});for(const n of ['1','2','3','4','5','6','7','8','9','清除','0','⌫']){plus.append(element('button',{class:'key',onclick:()=>{if(n==='清除'){form.qty='';if(tempEdit){exitTempEdit(true);return}}else if(n==='⌫')form.qty=form.qty.slice(0,-1);else form.qty+=n;renderStep()}},n))}a.append(plus)}
+if(key==='note'){a.append(blockTitle('备注（可选）'));const t=element('textarea',{placeholder:'输入备注，不需要可留空',rows:'4'});t.value=form.note;t.dataset.draftField='note';t.addEventListener('input',()=>form.note=t.value);a.append(t);a.append(clearAction('清空备注',()=>{form.note='';t.value='';if(tempEdit){exitTempEdit(true);return}refreshSaveAction();scheduleDraftSave();t.focus()}));const s=element('div',{class:'panel'});const dims=['lengthCm','widthCm','heightCm'].map(k=>form[k]||'—').join(' × ');s.append(element('h3',{},'保存前核对'),element('p',{class:'mini'},`库位：${canonical(form)}\nPart No.：${form.partNo||'—'}\nERP：${form.erp||'—'}\n尺寸：${dims} cm · 重量：${form.weightKg||'—'} kg\n数量：${form.qty}`));s.style.whiteSpace='pre-line';if(!tempEdit)a.append(s)}
  refreshSaveAction();
 }
 function validStep(){
@@ -651,14 +650,76 @@ function startNew(){
  step=form.floor?(form.col&&form.row?STAGE.level:form.col?STAGE.row:STAGE.col):STAGE.floor;
  go('count');scheduleDraftSave();
 }
-function renderHistory(){const list=$('recordsList');list.replaceChildren();for(const r of [...records].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))){const e=element('div',{class:'rec'}),top=element('div',{class:'top'});top.append(element('strong',{},r.location),element('b',{},r.qty+' 个'));e.append(top,element('div',{class:'meta'},`Part No.: ${r.partNo||'—'} · ERP: ${r.erp||'—'}\n${r.physicalFloor?r.physicalFloor+'F · ':''}${r.worker} · ${r.updatedAt.slice(0,16).replace('T',' ')}${[r.lengthCm,r.widthCm,r.heightCm,r.weightKg].some(v=>v!==null&&v!==undefined&&v!=='')?'\n长×宽×高：'+[r.lengthCm,r.widthCm,r.heightCm].map(v=>v??'—').join('×')+' cm，重量 '+(r.weightKg??'—')+' kg':''} ${r.note?'\n备注：'+r.note:''}`));e.querySelector('.meta').style.whiteSpace='pre-line';const bs=element('div',{class:'buttons'});bs.append(element('button',{onclick:()=>editRecord(r)},'修改'),element('button',{onclick:()=>deleteRecord(r)},'撤销'));e.append(bs);list.append(e)}if(!records.length)list.append(element('p',{class:'muted'},'还没有本地盘点记录。'))}
+
+let openSwipeRecord=null, deletionUndo=null;
+function revealRecordSwipe(row,open){
+ if(openSwipeRecord&&openSwipeRecord!==row){openSwipeRecord.classList.remove('swipe-open');openSwipeRecord=null}
+ row.classList.toggle('swipe-open',Boolean(open));
+ if(open)openSwipeRecord=row;
+ else if(openSwipeRecord===row)openSwipeRecord=null;
+}
+function renderHistory(){
+ const list=$('recordsList');list.replaceChildren();openSwipeRecord=null;
+ for(const r of [...records].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))){
+  const row=element('div',{class:'swipe-record'});
+  const controls=element('div',{class:'swipe-actions'});
+  controls.append(
+   element('button',{type:'button',class:'swipe-edit','aria-label':`编辑 ${r.location} ${r.partNo||r.erp}`,onclick:()=>editRecord(r)},'编辑'),
+   element('button',{type:'button',class:'swipe-delete','aria-label':`删除 ${r.location} ${r.partNo||r.erp}`,onclick:()=>deleteRecord(r)},'删除')
+  );
+  const e=element('div',{class:'rec swipe-front',tabindex:'0'}),top=element('div',{class:'top'});
+  top.append(element('strong',{},r.location),element('b',{},r.qty+' 个'));
+  const more=element('button',{class:'swipe-more',type:'button','aria-label':'展开编辑和删除操作','aria-expanded':'false',onclick:()=>{revealRecordSwipe(row,!row.classList.contains('swipe-open'));more.setAttribute('aria-expanded',String(row.classList.contains('swipe-open')))}},'⋯');
+  top.append(more);
+  e.append(top,element('div',{class:'meta'},`Part No.: ${r.partNo||'—'} · ERP: ${r.erp||'—'}\n${r.physicalFloor?r.physicalFloor+'F · ':''}${r.worker} · ${r.updatedAt.slice(0,16).replace('T',' ')}${[r.lengthCm,r.widthCm,r.heightCm,r.weightKg].some(v=>v!==null&&v!==undefined&&v!=='')?'\n长×宽×高：'+[r.lengthCm,r.widthCm,r.heightCm].map(v=>v??'—').join('×')+' cm，重量 '+(r.weightKg??'—')+' kg':''} ${r.note?'\n备注：'+r.note:''}`));
+  e.querySelector('.meta').style.whiteSpace='pre-line';
+  row.append(controls,e);list.append(row);
+  let startX=0,startY=0,activeTouch=false;
+  row.addEventListener('touchstart',ev=>{if(ev.touches.length!==1)return;startX=ev.touches[0].clientX;startY=ev.touches[0].clientY;activeTouch=true},{passive:true});
+  row.addEventListener('touchend',ev=>{if(!activeTouch||!ev.changedTouches.length)return;activeTouch=false;const dx=ev.changedTouches[0].clientX-startX,dy=ev.changedTouches[0].clientY-startY;if(Math.abs(dx)>45&&Math.abs(dx)>Math.abs(dy)*1.2){revealRecordSwipe(row,dx<0);more.setAttribute('aria-expanded',String(dx<0))}},{passive:true});
+  e.addEventListener('keydown',ev=>{if(ev.key==='ArrowLeft'){revealRecordSwipe(row,true);more.setAttribute('aria-expanded','true')}else if(ev.key==='ArrowRight'||ev.key==='Escape'){revealRecordSwipe(row,false);more.setAttribute('aria-expanded','false')}});
+ }
+ if(!records.length)list.append(element('p',{class:'muted'},'还没有本地盘点记录。'));
+}
 function editRecord(r){form={...empty(),...r.locationFields,floor:Number(r.physicalFloor)||floorFromLevel(r.locationFields?.level)||workingFloor,erp:r.erp,partNo:r.partNo,partName:r.partName,lengthCm:r.lengthCm??'',widthCm:r.widthCm??'',heightCm:r.heightCm??'',weightKg:r.weightKg??'',qty:String(r.qty),mode:r.mode,originalLocation:r.originalLocation,note:r.note};editId=r.id;partSearch='';step=STAGE.part;maxStageReached=STAGE.note;tempEdit=null;go('count')}
-async function deleteRecord(r){if(!confirm(`确定撤销 ${r.location} / ${r.erp||r.partNo} / ${r.qty} 的记录？`))return;await req('records','put',{...r,deleted:true,updatedAt:new Date().toISOString()});await load();renderHistory();showToast('记录已撤销（导出时不会计算）')}
+
+function laterTimestamp(previous){
+ const prior=Date.parse(previous||'');return new Date(Math.max(Date.now(),Number.isFinite(prior)?prior+1:0)).toISOString();
+}
+function showDeletionUndo(tombstone){
+ deletionUndo={id:tombstone.id,updatedAt:tombstone.updatedAt};
+ const bar=$('undoDeletion');if(!bar)return;
+ const info=$('undoDeletionInfo');if(info)info.textContent=`已删除 ${tombstone.location} · ${tombstone.partNo||tombstone.erp||'零件'}`;
+ bar.hidden=false;clearTimeout(showDeletionUndo.timer);
+ showDeletionUndo.timer=setTimeout(()=>{bar.hidden=true;deletionUndo=null},6500);
+}
+async function undoRecordDeletion(){
+ if(!deletionUndo)return;
+ const saved=deletionUndo;deletionUndo=null;
+ const bar=$('undoDeletion');if(bar)bar.hidden=true;clearTimeout(showDeletionUndo.timer);
+ try{
+  const r=await req('records','get',saved.id);
+  if(!r||!r.deleted||r.updatedAt!==saved.updatedAt){showToast('记录状态已变化，无法撤销');return}
+  await req('records','put',{...r,deleted:false,updatedAt:laterTimestamp(r.updatedAt)});
+  await load();renderHistory();showToast('删除已撤销');
+ }catch(e){console.error(e);showToast('撤销失败：'+(e.message||e))}
+}
+const deletionInProgress=new Set();
+async function deleteRecord(r){
+ if(deletionInProgress.has(r.id))return;deletionInProgress.add(r.id);
+ try{
+  const old=await req('records','get',r.id);if(!old||old.deleted)return;
+  const tombstone={...old,deleted:true,updatedAt:laterTimestamp(old.updatedAt)};
+  await req('records','put',tombstone);await load();renderHistory();showDeletionUndo(tombstone);
+ }catch(e){console.error(e);showToast('删除失败，记录仍保留：'+(e?.message||e))}
+ finally{deletionInProgress.delete(r.id)}
+}
+
 function download(name,obj){const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json;charset=utf-8'});const url=URL.createObjectURL(blob);const a=element('a',{href:url,download:name});document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000)}
 async function exportRecords(){const raw=await all('records');const finished=await all('shelves');if(!raw.length&&!finished.length){showToast('尚无记录');return}const who=(safeLocalStorage.getItem('worker')||'employee').replace(/[^\w\u4e00-\u9fff-]/g,'_');const date=new Date().toISOString().slice(0,10);download(`stockcount_${date}_${who}.json`,{format:'hangcha-stockcount-export',version:2,exportedAt:new Date().toISOString(),snapshotId:meta.snapshotId||'',records:raw,shelfCompletions:finished});showToast('已生成 JSON 文件，请通过手机分享给电脑')}
 function currentShelf(){const c=form.col||'';const r=form.row||'';return c&&r?c+r:''}
 async function completeShelf(){const shelf=currentShelf();if(!shelf){showToast('请先选择列和货架号');return}const worker=$('worker').value.trim();const session=$('session').value.trim();if(!worker){showToast('请先填写盘点人');return}if(!confirm(`确认 ${currentFloor()}F · ${shelf} 的盘点已完成？\n这只是完成标记，不代表所有货物数量正确，也不阻止后续补盘。`))return;const id=crypto.randomUUID(),now=new Date().toISOString();await req('shelves','put',{id,shelf,physicalFloor:currentFloor(),worker,session,snapshotId:meta.snapshotId||'',completedAt:now,updatedAt:now,deleted:false});await load();showToast(`${currentFloor()}F · ${shelf} 已标记完成，导出时会一并提交`)}
 function renderShelves(){const list=$('shelfList');if(!list)return;list.replaceChildren();for(const t of shelves.filter(x=>!x.deleted).sort((a,b)=>b.completedAt.localeCompare(a.completedAt)).slice(0,30)){const d=element('div',{class:'rec'});d.append(element('strong',{},`${t.physicalFloor?t.physicalFloor+'F · ':''}${t.shelf}`),element('p',{class:'mini muted'},`${t.worker} · ${t.session} · ${t.completedAt.slice(0,16).replace('T',' ')}`));d.append(element('button',{class:'tiny',onclick:async()=>{if(!confirm(`撤销 ${t.shelf} 的已完成标记？`))return;await req('shelves','put',{...t,deleted:true,updatedAt:new Date().toISOString()});await load();renderShelves()}},'撤销标记'));list.append(d)}}
 async function importCatalog(file){if(!file)return;try{const data=JSON.parse(await file.text());if(data.format!=='hangcha-stockcount-catalog'||!Array.isArray(data.items))throw Error('库存文件格式不正确，请用电脑工具生成');if(data.items.length>120000)throw Error('库存行数超出安全限制');if(!confirm(`导入 ${data.items.length} 条库存记录？将替换手机当前库存基准，但不删除已盘点数据。`))return;const tx=db.transaction(['catalog','metadata'],'readwrite');tx.objectStore('catalog').clear();data.items.forEach((r,i)=>tx.objectStore('catalog').put({key:i,erp:String(r.erp||''),partNo:String(r.partNo||''),name:String(r.name||''),location:String(r.location||'').trim().toUpperCase(),locations:Array.isArray(r.locations)?r.locations.map(x=>String(x).trim().toUpperCase()):[],bookQty:r.bookQty??null,referenceDimensions:String(r.referenceDimensions||''),referenceWeight:String(r.referenceWeight||'')}));tx.objectStore('metadata').put({key:'catalogName',value:file.name});tx.objectStore('metadata').put({key:'snapshotId',value:data.snapshotId||''});await new Promise((res,rej)=>{tx.oncomplete=res;tx.onerror=()=>rej(tx.error)});await load();showToast('库存基准已缓存在手机中，可离线联想')}catch(e){alert('导入失败：'+e.message)}}
-async function init(){try{db=await openDB()}catch(e){alert('无法打开手机本地数据库（IndexedDB）。请确认不是无痕浏览，并在普通 Safari/Chrome 中重试。错误：'+(e?.message||e));return}try{await load()}catch(e){console.error('StockCount initialization failed:',e);alert('盘库 App 初始化失败（不一定是 IndexedDB 问题），请先备份已有记录，再检查版本或联系管理员。错误：'+(e?.message||e));return}for(const el of document.querySelectorAll('nav button'))el.addEventListener('click',()=>go(el.dataset.view));$('start').onclick=startNew;$('catalogFile').onchange=e=>importCatalog(e.target.files[0]);$('nextBtn').onclick=next;$('finishBtn').onclick=saveDirect;$('completeShelf').onclick=completeShelf;$('skipBtn').onclick=()=>{if(step===STAGE.measure){step=STAGE.qty;renderStep()}else stopLocation()};$('backBtn').onclick=backStep;$('changeFloor').onclick=()=>switchTempEdit('floor');for(const id of ['exportHome','exportHistory','exportSettings'])$(id).onclick=exportRecords;$('persistBtn').onclick=async()=>{if(!navigator.storage?.persist){$('persistStatus').textContent='当前浏览器不支持存储持久化请求';return}const yes=await navigator.storage.persist();$('persistStatus').textContent=yes?'浏览器已允许持久化存储（仍建议备份）':'浏览器未授予持久化，请频繁导出备份'};$('clearRecords').onclick=async()=>{if(!confirm('危险：这将删除本机全部盘点记录。确定已经备份到电脑？'))return;if(prompt('再次输入 DELETE 确认')!=='DELETE')return;const tx=db.transaction(['records','shelves'],'readwrite');tx.objectStore('records').clear();tx.objectStore('shelves').clear();await new Promise((r,j)=>{tx.oncomplete=r;tx.onerror=j});await load();showToast('本机盘点记录已清空')};$('worker').addEventListener('change',()=>safeLocalStorage.setItem('worker',$('worker').value.trim()));$('session').addEventListener('change',()=>safeLocalStorage.setItem('session',$('session').value.trim()));document.addEventListener('focusin',e=>noteInputFocus(e.target));document.addEventListener('keyup',e=>noteInputFocus(e.target));document.addEventListener('selectionchange',()=>noteInputFocus(document.activeElement));document.addEventListener('input',e=>{noteInputFocus(e.target);if($('count').classList.contains('active')){updateLocationView();refreshSaveAction();scheduleDraftSave()}});document.addEventListener('change',()=>{if($('count').classList.contains('active')){refreshSaveAction();scheduleDraftSave()}});document.addEventListener('pagehide',()=>{if(db)persistDraft()});document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&db)persistDraft()});if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});}
+async function init(){try{db=await openDB()}catch(e){alert('无法打开手机本地数据库（IndexedDB）。请确认不是无痕浏览，并在普通 Safari/Chrome 中重试。错误：'+(e?.message||e));return}try{await load()}catch(e){console.error('StockCount initialization failed:',e);alert('盘库 App 初始化失败（不一定是 IndexedDB 问题），请先备份已有记录，再检查版本或联系管理员。错误：'+(e?.message||e));return}for(const el of document.querySelectorAll('nav button'))el.addEventListener('click',()=>go(el.dataset.view));$('start').onclick=startNew;$('undoDelete').onclick=undoRecordDeletion;document.addEventListener('pointerdown',ev=>{if(openSwipeRecord&&!ev.target.closest('.swipe-record'))revealRecordSwipe(openSwipeRecord,false)});$('catalogFile').onchange=e=>importCatalog(e.target.files[0]);$('nextBtn').onclick=next;$('finishBtn').onclick=saveDirect;$('completeShelf').onclick=completeShelf;$('skipBtn').onclick=()=>{if(step===STAGE.measure){step=STAGE.qty;renderStep()}else stopLocation()};$('backBtn').onclick=backStep;$('changeFloor').onclick=()=>switchTempEdit('floor');for(const id of ['exportHome','exportHistory','exportSettings'])$(id).onclick=exportRecords;$('persistBtn').onclick=async()=>{if(!navigator.storage?.persist){$('persistStatus').textContent='当前浏览器不支持存储持久化请求';return}const yes=await navigator.storage.persist();$('persistStatus').textContent=yes?'浏览器已允许持久化存储（仍建议备份）':'浏览器未授予持久化，请频繁导出备份'};$('clearRecords').onclick=async()=>{if(!confirm('危险：这将删除本机全部盘点记录。确定已经备份到电脑？'))return;if(prompt('再次输入 DELETE 确认')!=='DELETE')return;const tx=db.transaction(['records','shelves'],'readwrite');tx.objectStore('records').clear();tx.objectStore('shelves').clear();await new Promise((r,j)=>{tx.oncomplete=r;tx.onerror=j});await load();showToast('本机盘点记录已清空')};$('worker').addEventListener('change',()=>safeLocalStorage.setItem('worker',$('worker').value.trim()));$('session').addEventListener('change',()=>safeLocalStorage.setItem('session',$('session').value.trim()));document.addEventListener('focusin',e=>noteInputFocus(e.target));document.addEventListener('keyup',e=>noteInputFocus(e.target));document.addEventListener('selectionchange',()=>noteInputFocus(document.activeElement));document.addEventListener('input',e=>{noteInputFocus(e.target);if($('count').classList.contains('active')){updateLocationView();refreshSaveAction();scheduleDraftSave()}});document.addEventListener('change',()=>{if($('count').classList.contains('active')){refreshSaveAction();scheduleDraftSave()}});document.addEventListener('pagehide',()=>{if(db)persistDraft()});document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&db)persistDraft()});if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});}
 init();

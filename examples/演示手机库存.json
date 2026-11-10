@@ -1,0 +1,74 @@
+{
+  "format": "hangcha-stockcount-catalog",
+  "version": 1,
+  "snapshotId": "07b4bfe1d263ca55",
+  "createdAt": "2026-11-10T13:22:23.946934+00:00",
+  "sourceName": "演示ERP库存.csv",
+  "items": [
+    {
+      "erp": "ERP001",
+      "partNo": "DEMO-PART-001",
+      "name": "演示备件 1",
+      "location": "A120401-II-1",
+      "locations": [
+        "A120401-II-1"
+      ],
+      "bookQty": 20.0,
+      "referenceWeight": "",
+      "referenceDimensions": "",
+      "sourceSheet": "Sp Stock CSV"
+    },
+    {
+      "erp": "ERP002",
+      "partNo": "DEMO-PART-002",
+      "name": "演示备件 2",
+      "location": "A120401-II-2",
+      "locations": [
+        "A120401-II-2"
+      ],
+      "bookQty": 8.0,
+      "referenceWeight": "",
+      "referenceDimensions": "",
+      "sourceSheet": "Sp Stock CSV"
+    },
+    {
+      "erp": "ERP003",
+      "partNo": "DEMO-PART-003",
+      "name": "演示备件 3",
+      "location": "B030201-I",
+      "locations": [
+        "B030201-I"
+      ],
+      "bookQty": 5.0,
+      "referenceWeight": "",
+      "referenceDimensions": "",
+      "sourceSheet": "Sp Stock CSV"
+    },
+    {
+      "erp": "ERP004",
+      "partNo": "DEMO-PART-004",
+      "name": "演示备件 4",
+      "location": "H130401-III-AB",
+      "locations": [
+        "H130401-III-AB"
+      ],
+      "bookQty": 3.0,
+      "referenceWeight": "",
+      "referenceDimensions": "",
+      "sourceSheet": "Sp Stock CSV"
+    },
+    {
+      "erp": "ERP005",
+      "partNo": "DEMO-PART-005",
+      "name": "演示备件 5",
+      "location": "F080203-I-1",
+      "locations": [
+        "F080203-I-1"
+      ],
+      "bookQty": 2.0,
+      "referenceWeight": "",
+      "referenceDimensions": "",
+      "sourceSheet": "Sp Stock CSV"
+    }
+  ]
+}

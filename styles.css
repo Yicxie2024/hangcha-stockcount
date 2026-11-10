@@ -172,3 +172,20 @@ body.temp-edit #count .bottom-actions #nextBtn.node-apply:active{background:#dbe
   #count .bottom-actions #nextBtn.node-apply,
   body.temp-edit #count .bottom-actions #backBtn.edit-cancel{font-size:13px;padding:7px 5px}
 }
+
+/* v0.4.2: compact swipe actions for history entries; large accessible touch targets. */
+#history .swipe-record{position:relative;overflow:hidden;border-radius:13px;margin-bottom:10px;isolation:isolate;touch-action:pan-y}
+#history .swipe-actions{position:absolute;inset:0 0 0 auto;display:flex;align-items:stretch;justify-content:flex-end;z-index:0;width:156px}
+#history .swipe-actions button{border:0;color:white;font-size:15px;font-weight:750;width:78px;min-height:72px;touch-action:manipulation;cursor:pointer}
+#history .swipe-edit{background:#236892}
+#history .swipe-delete{background:#c34c41}
+#history .swipe-front{position:relative;z-index:1;background:#fff;transform:translate3d(0,0,0);transition:transform .19s ease;will-change:transform;margin:0;touch-action:pan-y}
+#history .swipe-record.swipe-open .swipe-front{transform:translate3d(-156px,0,0)}
+#history .swipe-record .top{gap:6px;align-items:center}
+#history .swipe-record .top strong{min-width:0;overflow-wrap:anywhere;flex:1}
+#history .swipe-more{border:0;background:#edf4f9;color:#466b85;border-radius:8px;font-size:21px;width:36px;min-height:34px;flex:none;cursor:pointer;padding:0;line-height:1}
+#history .swipe-more:focus-visible,#history .swipe-actions button:focus-visible{outline:3px solid #f2a257;outline-offset:-3px}
+.undo-deletion{position:fixed;z-index:90;bottom:calc(74px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);width:min(calc(100vw - 24px),450px);padding:10px 11px;display:flex;align-items:center;justify-content:space-between;gap:8px;background:#17334b;color:#fff;border-radius:12px;box-shadow:0 8px 28px #15324e65;font-size:13px}
+.undo-deletion[hidden]{display:none}
+.undo-deletion button{border:1px solid #b8d0e1;color:#fff;background:#315a77;border-radius:9px;padding:9px 11px;min-height:39px;white-space:nowrap;font-size:13px;font-weight:800;cursor:pointer}
+@media(prefers-reduced-motion:reduce){#history .swipe-front{transition:none}}

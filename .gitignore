@@ -1,0 +1,24 @@
+# Keep actual company inventory and staff export files OUT of the PUBLIC repository.
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.json
+!desktop/mapping.json
+!examples/演示ERP库存.csv
+!examples/演示员工A_盘点记录.json
+!examples/演示手机库存.json
+手机库存基准_*
+已有备件*
+stockcount_*
+data/
+private/
+exports/
+output/
+*.sqlite
+*.db
+*.log
+__pycache__/
+.pytest_cache/
+.DS_Store
+Thumbs.db

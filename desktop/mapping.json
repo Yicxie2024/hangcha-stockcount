@@ -1,0 +1,10 @@
+{
+  "sheet_prefix": "库存已有备件",
+  "columns": {
+    "erp": "商品明细码ERP",
+    "partNo": "Part.No.",
+    "name": "Description",
+    "location": "Rack No.",
+    "bookQty": "存"
+  }
+}
