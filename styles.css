@@ -119,3 +119,56 @@ body.temp-edit .pipeline-node:not(:disabled){touch-action:manipulation}
 body.temp-edit #count .bottom-actions .direct-save{display:flex}
 
 #count .bottom-actions:has(.direct-save:not([style*="display: none"])) #nextBtn{background:#e9f0f7;color:#315574;box-shadow:none}
+
+
+/* v0.4.0: clear values directly inside transaction editor without erasing cargo. */
+#count .clear-wrap{display:flex;flex-direction:column;align-items:flex-start;gap:3px;margin:11px 0 3px}
+#count .clear-field{font:inherit;font-size:14px;font-weight:760;color:#9f3d29;background:#fff8f6;border:1px solid #eab5a7;border-radius:10px;min-height:42px;padding:8px 14px;display:inline-flex;justify-content:center;align-items:center;cursor:pointer;touch-action:manipulation}
+#count .clear-field span{font-size:20px;line-height:1;color:#c04a30;margin-right:3px}
+#count .clear-field:active{background:#fce6e0}
+#count .entry-block .clear-wrap{margin-top:8px}
+#count .measure-field .measure-clear{display:block;min-height:36px;min-width:60px;margin:7px auto 0;padding:4px 9px;border:1px solid #e3c0bb;background:#fff8f6;color:#a04939;border-radius:9px;font-size:12px;font-weight:750;cursor:pointer}
+#count .measure-field{display:flex;flex-direction:column;gap:0;align-items:stretch}
+#count .weight-section .measure-field .measure-clear{margin:7px 0 0 auto}
+#count .pipeline-node.unfilled:not(:disabled) strong{color:#55758d}
+#count .pipeline-node.unfilled:not(:disabled){border-style:dashed}
+
+
+/* v0.4.1: one visually dominant full-record save; auxiliary node editing is neutral. */
+#count .bottom-actions .direct-save,
+#count .bottom-actions #nextBtn.record-save{
+  background:#17684c;
+  color:#fff;
+  font-size:15px;
+  font-weight:800;
+  line-height:1.25;
+  text-align:center;
+  padding:12px 13px;
+  min-height:58px;
+  box-shadow:0 3px 12px #1a765032;
+  border:1px solid #17684c;
+}
+#count .bottom-actions #nextBtn.record-save:active{background:#105139}
+#count .bottom-actions #nextBtn.node-apply{
+  background:#e9f0f7;
+  color:#315574;
+  border:1px solid #c8dbe9;
+  box-shadow:none;
+  flex:1.15;
+  font-size:14px;
+  font-weight:750;
+  min-height:51px;
+}
+body.temp-edit #count .bottom-actions #backBtn.edit-cancel{
+  flex:1.15;
+  font-size:14px;
+  color:#476076;
+}
+/* The action should look non-final even when the quick-save button is hidden. */
+body.temp-edit #count .bottom-actions #nextBtn.node-apply:active{background:#dbe7f1}
+@media(max-width:365px){
+  #count .bottom-actions #nextBtn.record-save,
+  #count .bottom-actions .direct-save{font-size:14px}
+  #count .bottom-actions #nextBtn.node-apply,
+  body.temp-edit #count .bottom-actions #backBtn.edit-cancel{font-size:13px;padding:7px 5px}
+}

@@ -1,4 +1,4 @@
-/* Hangcha StockCount Offline v0.3.9: direct record saving and history edit return. */
+/* Hangcha StockCount Offline v0.4.1: clear save-vs-apply labels and action hierarchy. */
 'use strict';
 const DB_NAME='hangcha-stockcount-01'; let db;let catalog=[];let meta={};let records=[];
 const STEPS=['floor','col','row','level','slot','partition','suffix','part','measure','qty','note'];
@@ -9,7 +9,7 @@ const empty=()=>({floor:0,col:'',row:'',level:'',slot:'',partition:'',suffix:'',
 let form=empty(),step=0,lastLocation=null,editId=null,workingFloor=0;let shelves=[];let partSearch='', searchTimer=null;
 // Normal wizard state (form) is separate from a temporary, uncommitted node edit.
 // An edit holds the original draft until the user explicitly confirms.
-let tempEdit=null, focusBookmark=null, draftTimer=null, persistedDraft=null, savingRecord=false;
+let tempEdit=null, focusBookmark=null, draftTimer=null, persistedDraft=null, savingRecord=false, maxStageReached=0;
 const NODE_GROUPS=[
  [{id:'floor',label:'楼层',fields:['floor'],stage:STAGE.floor},
   {id:'col',label:'列',fields:['col'],stage:STAGE.col},
@@ -27,21 +27,32 @@ const NODE_GROUPS=[
 const NODES=NODE_GROUPS.flat();
 const nodeById=id=>NODES.find(x=>x.id===id);
 function clone(v){return JSON.parse(JSON.stringify(v))}
-function savedDraft(){const x=tempEdit?{form:tempEdit.originalForm,step:tempEdit.originStep,partSearch:tempEdit.originalSearch}: {form,step,partSearch};return {version:1,form:clone(x.form),step:x.step,partSearch:x.partSearch,editId,worker:$('worker')?.value.trim()||'',session:$('session')?.value.trim()||'',savedAt:new Date().toISOString()}}
+function savedDraft(){const x=tempEdit?{form:tempEdit.originalForm,step:tempEdit.originStep,partSearch:tempEdit.originalSearch}: {form,step,partSearch};return {version:2,form:clone(x.form),step:x.step,maxStageReached,partSearch:x.partSearch,editId,worker:$('worker')?.value.trim()||'',session:$('session')?.value.trim()||'',savedAt:new Date().toISOString()}}
 async function persistDraft(){if(!db)return;try{{const d=savedDraft();await req('metadata','put',{key:'activeDraft',value:d});persistedDraft=d}}catch(e){console.warn('Draft persistence failed',e)}}
 function scheduleDraftSave(){if(!db)return;clearTimeout(draftTimer);draftTimer=setTimeout(persistDraft,350)}
 function hasUnfinishedInput(d){const x=d?.form||{};return Boolean(d?.editId||d?.partSearch||STEPS[d?.step]==='part'||STEPS[d?.step]==='measure'||STEPS[d?.step]==='qty'||STEPS[d?.step]==='note'||['level','slot','partition','suffix','erp','partNo','lengthCm','widthCm','heightCm','weightKg','qty','note'].some(k=>String(x[k]??'')!==''))}
 function nodeText(n,x){switch(n.id){case 'floor':return validFloor(x.floor)?x.floor+'F':'—';case 'part':return x.partNo||x.erp||'—';case 'dimensions':return [x.lengthCm,x.widthCm,x.heightCm].some(Boolean)?[x.lengthCm,x.widthCm,x.heightCm].map(y=>y||'–').join('×'):'—';case 'weight':return x.weightKg?x.weightKg+'kg':'—';case 'qty':return x.qty===''?'—':String(x.qty);case 'note':return x.note?(x.note.length>7?x.note.slice(0,7)+'…':x.note):'—';default:return x[n.fields[0]]||'—'}}
 function noteInputFocus(el){if(tempEdit||!el?.dataset?.draftField)return;let start=null,end=null;try{start=el.selectionStart;end=el.selectionEnd}catch(e){}focusBookmark={step,key:el.dataset.draftField,start,end,scrollY:window.scrollY,inputScrollTop:el.scrollTop||0}}
 function restoreReturnPoint(bookmark){if(!bookmark)return;requestAnimationFrame(()=>{const el=[...document.querySelectorAll('#stepArea [data-draft-field]')].find(x=>x.dataset.draftField===bookmark.key);if(el&&bookmark.step===step){try{el.focus({preventScroll:true});if(bookmark.start!==null&&bookmark.end!==null)el.setSelectionRange(bookmark.start,bookmark.end);if(Number.isFinite(bookmark.inputScrollTop))el.scrollTop=bookmark.inputScrollTop}catch(e){}}if(Number.isFinite(bookmark.scrollY))window.scrollTo(0,bookmark.scrollY)})}
-// A node is available as a *switch target* only when it already has a value in
-// the original counting draft. The original working stage is always accessible
-// (even when it is partially typed or empty) to resume work immediately.
+// Previously visited optional nodes can be revisited even when left blank.
+// Future nodes stay unavailable, and a history record exposes all nodes.
 function isFilledNode(node,x){
  if(node.id==='floor')return validFloor(x.floor);
  if(node.id==='part')return Boolean(String(x.erp||'').trim()||String(x.partNo||'').trim());
  if(node.id==='dimensions')return ['lengthCm','widthCm','heightCm'].some(k=>String(x[k]??'').trim());
  return node.fields.some(k=>String(x[k]??'').trim()!=='');
+}
+function canEditNode(node,x,reach=maxStageReached){
+ if(!node)return false;
+ if(node.stage>reach&&!isFilledNode(node,x))return false;
+ if(node.stage>=STAGE.row&&node.stage<=STAGE.suffix&&!x.col)return false;
+ if(node.stage>=STAGE.level&&node.stage<=STAGE.suffix&&!validFloor(x.floor))return false;
+ return true;
+}
+function originNodeId(stage,bookmark){
+ if(stage===STAGE.measure&&bookmark?.key==='weightKg')return 'weight';
+ if(stage===STAGE.measure)return 'dimensions';
+ return (NODES.find(n=>n.stage===stage)||{}).id||null;
 }
 function hasPendingTempChange(){
  if(!tempEdit)return false;
@@ -54,9 +65,10 @@ function hasPendingTempChange(){
 // edit: retain one immutable original draft and one original return bookmark.
 function switchTempEdit(id){
  if(!tempEdit){beginTempEdit(id);return}
- const node=nodeById(id);if(!node||id===tempEdit.target)return;
- if(node.stage===tempEdit.originStep){exitTempEdit(false);return}
- if(!isFilledNode(node,tempEdit.originalForm))return;
+ const node=nodeById(id);if(!node)return;
+ if(id===tempEdit.originNode){exitTempEdit(false);return}
+ if(id===tempEdit.target)return;
+ if(!canEditNode(node,tempEdit.originalForm,tempEdit.originReach))return;
  const discarded=hasPendingTempChange();
  clearTimeout(searchTimer);
  form=clone(tempEdit.originalForm);
@@ -69,11 +81,12 @@ function switchTempEdit(id){
 function beginTempEdit(id){
  if(tempEdit)return;
  const node=nodeById(id);if(!node)return;
+ if(!canEditNode(node,form)){showToast('此节点尚未到达');return}
  // A row needs a column, and the height selection requires a physical floor.
  if(node.stage>=STAGE.row&&node.stage<=STAGE.suffix&&!form.col){showToast('请先选择货架列');return}
  if(node.stage>=STAGE.level&&node.stage<=STAGE.suffix&&!validFloor(form.floor)){showToast('请先选择物理楼层');return}
  const bookmark=focusBookmark?.step===step?{...focusBookmark}:null;
- tempEdit={target:id,originStep:step,originalForm:clone(form),originalSearch:partSearch,bookmark,originScrollY:window.scrollY};
+ tempEdit={target:id,originStep:step,originNode:originNodeId(step,bookmark),originReach:maxStageReached,originalForm:clone(form),originalSearch:partSearch,bookmark,originScrollY:window.scrollY};
  form=clone(form);step=node.stage;renderStep();
 }
 function checkLocation(x){
@@ -88,14 +101,14 @@ function checkLocation(x){
 }
 function checkEditedValue(id,proposal){
  const locationError=checkLocation(proposal);if(locationError)return locationError;
- if(id==='part'&&!String(proposal.erp||'').trim()&&!String(proposal.partNo||'').trim())return '请选择或输入 ERP / Part No.';
+ // Clearing the selected part is allowed in the draft; the final save still requires an identity.
  if(id==='dimensions'||id==='weight'){
   for(const k of (id==='weight'?['weightKg']:['lengthCm','widthCm','heightCm'])){
    const s=String(proposal[k]??'').trim();if(s&&!/^(?:\d+(?:[.,]\d+)?|[.,]\d+)$/.test(s))return '尺寸/重量必须为数字，或留空';
    const n=measurementValue(s);if(s&&(!Number.isFinite(n)||n<=0||n>1000000))return '尺寸/重量必须大于0，或留空';
   }
  }
- if(id==='qty'&&!/^(0|[1-9]\d*)$/.test(String(proposal.qty))||id==='qty'&&!Number.isSafeInteger(Number(proposal.qty)))return '请输入非负整数数量';
+ if(id==='qty'&&String(proposal.qty)!==''&&(!/^(0|[1-9]\d*)$/.test(String(proposal.qty))||!Number.isSafeInteger(Number(proposal.qty))))return '请输入非负整数数量';
  return '';
 }
 // Full-record saving is separate from confirming a single node. A temporary
@@ -104,6 +117,25 @@ function proposedSaveForm(){
  if(!tempEdit)return clone(form);
  const x=clone(tempEdit.originalForm), node=nodeById(tempEdit.target);
  if(node)for(const key of node.fields)x[key]=form[key];
+ return x;
+}
+// Create a proposed whole-record state. Clearing an intermediate location node
+// can only clear its descendants after explicit consent; cargo data is never
+// part of that cascade. The unconfirmed edit buffer stays intact on cancel.
+function resolvedTempProposal(confirmCascade){
+ if(!tempEdit)return clone(form);
+ const x=proposedSaveForm();
+ const id=tempEdit.target,idx=FIELDS.indexOf(id);
+ if(idx>=0&&String(tempEdit.originalForm[id]||'')&&String(x[id]||'')===''){
+  const downstream=FIELDS.slice(idx+1).filter(k=>String(x[k]||'').trim());
+  if(downstream.length){
+   if(!confirmCascade)return x;
+   const labels={row:'货架号',level:'高度',slot:'箱号',partition:'箱层',suffix:'备注号'};
+   const text=downstream.map(k=>`${labels[k]||k} ${x[k]}`).join('、');
+   if(!confirm(`清空${nodeById(id).label}将同时清空更细库位：${text}。\n零件、尺寸、重量、数量与普通备注都会保留。\n确定清空吗？`))return null;
+   for(const k of downstream)x[k]='';
+  }
+ }
  return x;
 }
 function recordValidationError(x){
@@ -128,13 +160,14 @@ function refreshSaveAction(){
  // has the primary save button; do not show two identical actions.
  const visible=(Boolean(editId)||ready)&&(Boolean(tempEdit)||step!==STAGE.note);
  b.style.display=visible?'flex':'none';
- b.textContent=editId?'保存修改并返回记录 ✓':'保存并继续 ✓';
+ b.textContent=editId?'✓ 保存记录并返回列表':'✓ 保存本条，开始下一条';
  b.disabled=savingRecord;
  const nextBtn=$('nextBtn');if(nextBtn)nextBtn.disabled=savingRecord;
 }
 async function saveDirect(){
  if(savingRecord)return false;
- const proposed=proposedSaveForm();
+ const proposed=resolvedTempProposal(true);
+ if(!proposed)return false;
  if(tempEdit){
   const e=checkEditedValue(tempEdit.target,proposed);
   if(e){showToast(e);return false}
@@ -146,25 +179,35 @@ async function saveDirect(){
 function exitTempEdit(commit){
  if(!tempEdit)return;
  clearTimeout(searchTimer);
- const edit=tempEdit;const original=clone(edit.originalForm);const proposed=clone(original);
- if(commit){for(const k of nodeById(edit.target).fields)proposed[k]=form[k];const err=checkEditedValue(edit.target,proposed);if(err){showToast(err);return}}
+ const edit=tempEdit;const original=clone(edit.originalForm);
+ const proposed=commit?resolvedTempProposal(true):original;
+ if(!proposed)return;
+ if(commit){const err=checkEditedValue(edit.target,proposed);if(err){showToast(err);return}}
  const floorChanged=commit&&edit.target==='floor'&&Number(original.floor)!==Number(proposed.floor);
  form=commit?proposed:original;partSearch=edit.originalSearch;
  step=edit.originStep;tempEdit=null;renderStep();
  if(floorChanged){workingFloor=Number(form.floor);req('metadata','put',{key:'workingFloor',value:workingFloor}).catch(e=>console.warn(e));}
  scheduleDraftSave();restoreReturnPoint(edit.bookmark||{scrollY:edit.originScrollY});
- if(commit)showToast('已修改 · 返回原步骤');
+ if(commit)showToast('已确认修改 · 返回原步骤');
 }
 
 const $=id=>document.getElementById(id);
+// Browser privacy settings can disable localStorage even when IndexedDB works.
+// Convenience preferences must never turn a successful record write into a false failure.
+const safeLocalStorage={
+ getItem(k){try{return window.localStorage.getItem(k)}catch(e){return null}},
+ setItem(k,v){try{window.localStorage.setItem(k,v)}catch(e){console.warn('localStorage unavailable:',e)}}
+};
 // All displayed locations are derived from the same form state.
 function floorFromLevel(level){const n=Number(level);return n>=1&&n<=12?Math.ceil(n/4):0}
 function currentFloor(){return Number(form.floor)||floorFromLevel(form.level)||0}
 function validFloor(f){return Number.isInteger(Number(f))&&Number(f)>=1&&Number(f)<=3}
-function resetDependentData(){
-  form.partKey='';form.erp='';form.partNo='';form.partName='';
-  for(const k of ['lengthCm','widthCm','heightCm','weightKg'])form[k]='';
-  form.qty='';form.note='';partSearch='';
+// For location edits, invalidate only descendant location components.
+// Never silently wipe the selected part, measurements, quantity, or note.
+function clearLocationDescendants(field,x=form){
+ const index=FIELDS.indexOf(field);
+ if(index<0)return;
+ for(let i=index+1;i<FIELDS.length;i++)x[FIELDS[i]]='';
 }
 function clearSelectedPart(){form.partKey='';form.erp='';form.partNo='';form.partName=''}
 function previewPlaceholder(key){return key==='col'?'A–P':key==='partition'?'I–III':key==='suffix'?'…':'□□'}
@@ -190,7 +233,15 @@ function updateLocationView(){
  const pending=$('pendingLocation');if(pending){
   const target=tempEdit&&FIELDS.includes(tempEdit.target);
   pending.hidden=!target;
-  if(target){pending.textContent='待确认：'+(canonical(form)||'—');}
+  if(target){
+   const next=proposedSaveForm(),idx=FIELDS.indexOf(tempEdit.target);
+   let hint='';
+   if(idx>=0&&String(tempEdit.originalForm[tempEdit.target]||'')&&String(next[tempEdit.target]||'')===''){
+    const descend=FIELDS.slice(idx+1).filter(k=>String(next[k]||'').trim());
+    if(descend.length){for(const k of descend)next[k]='';hint=' · 确认后清空下级库位'}
+   }
+   pending.textContent='待确认：'+(canonical(next)||'—')+hint;
+  }
  }
  const change=$('changeFloor');if(change)change.textContent=currentFloor()?`切换 ${currentFloor()}F`:'选楼层';
  renderTrail();
@@ -200,9 +251,8 @@ function setLocationField(field,value){
  form[field]=value;
  // Transactional edits never erase other fields, even temporarily.
  if(tempEdit){scheduleDraftSave();return}
- const index=FIELDS.indexOf(field);
- for(let i=index+1;i<FIELDS.length;i++)form[FIELDS[i]]='';
- resetDependentData();scheduleDraftSave();
+ clearLocationDescendants(field);
+ scheduleDraftSave();
 }
 function lastLocationField(){
  for(let i=FIELDS.length-1;i>=0;i--)if(String(form[FIELDS[i]]||'').trim())return i;
@@ -220,8 +270,8 @@ function renderTrail(){
   for(const node of NODE_GROUPS[group]){
    const selected=(tempEdit?tempEdit.target===node.id:node.stage===step&&((step!==STAGE.measure)||node.id==='dimensions'));
    const nodeView=tempEdit?tempEdit.originalForm:form;
-   const originTarget=Boolean(tempEdit&&node.stage===tempEdit.originStep);
-   const canSwitch=!tempEdit||selected||originTarget||isFilledNode(node,tempEdit.originalForm);
+   const originTarget=Boolean(tempEdit&&node.id===tempEdit.originNode);
+   const canSwitch=tempEdit?(selected||originTarget||canEditNode(node,tempEdit.originalForm,tempEdit.originReach)):canEditNode(node,form);
    const b=element('button',{type:'button',class:'pipeline-node'+(selected?' current':'')+(nodeText(node,nodeView)==='—'?' unfilled':'')+(tempEdit&&originTarget&&!selected?' return-origin':''),onclick:()=>switchTempEdit(node.id)});
    b.append(element('small',{},node.label),element('strong',{},nodeText(node,nodeView)));
    b.title=tempEdit?(originTarget&&!selected?'返回之前的工作节点':selected?'正在编辑':canSwitch?'切换编辑（不保存当前修改）':'此节点尚未填写'): `点击临时修改${node.label}`;
@@ -238,7 +288,7 @@ async function chooseFloor(f){
   if(old!==n){
     // A physical floor has 4 rack levels; changing floors cannot retain a stale level.
     for(let i=2;i<FIELDS.length;i++)form[FIELDS[i]]='';
-    resetDependentData();
+    // Keep the previously entered part and measurements for review.
   }
   form.floor=n;workingFloor=n;
   try{await req('metadata','put',{key:'workingFloor',value:n});meta.workingFloor=n}
@@ -254,7 +304,7 @@ function backStep(){
   if(step>=STAGE.col&&step<=STAGE.suffix){
     // 'Back' deletes the last entered component and every descendant.
     const here=step-1;const clearFrom=String(form[FIELDS[here]]||'').trim()?here:here-1;
-    if(clearFrom>=0){for(let i=clearFrom;i<FIELDS.length;i++)form[FIELDS[i]]='';resetDependentData()}
+    if(clearFrom>=0){for(let i=clearFrom;i<FIELDS.length;i++)form[FIELDS[i]]=''}
   }
   step--;renderStep();
 }
@@ -263,7 +313,7 @@ function showSavedFeedback(location,qty,revised=false){const el=$('saveFeedback'
 function openDB(){return new Promise((resolve,reject)=>{const q=indexedDB.open(DB_NAME,2);q.onupgradeneeded=()=>{const d=q.result;if(!d.objectStoreNames.contains('records'))d.createObjectStore('records',{keyPath:'id'});if(!d.objectStoreNames.contains('catalog'))d.createObjectStore('catalog',{keyPath:'key'});if(!d.objectStoreNames.contains('metadata'))d.createObjectStore('metadata',{keyPath:'key'});if(!d.objectStoreNames.contains('shelves'))d.createObjectStore('shelves',{keyPath:'id'})};q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)})}
 function req(store,method,...args){return new Promise((resolve,reject)=>{const tx=db.transaction(store,'readwrite');const op=tx.objectStore(store)[method](...args);op.onsuccess=()=>resolve(op.result);op.onerror=()=>reject(op.error)})}
 function all(store){return req(store,'getAll')}
-async function load(){records=(await all('records')).filter(r=>!r.deleted);catalog=await all('catalog');shelves=await all('shelves');const m=await all('metadata');meta=Object.fromEntries(m.map(x=>[x.key,x.value]));$('worker').value=localStorage.getItem('worker')||'';$('session').value=localStorage.getItem('session')||new Date().getFullYear()+'年度盘库';persistedDraft=meta.activeDraft||null;lastLocation=meta.lastLocation||null;workingFloor=validFloor(meta.workingFloor)?Number(meta.workingFloor):(validFloor(lastLocation?.floor)?Number(lastLocation.floor):floorFromLevel(lastLocation?.level));refreshStats()}
+async function load(){records=(await all('records')).filter(r=>!r.deleted);catalog=await all('catalog');shelves=await all('shelves');const m=await all('metadata');meta=Object.fromEntries(m.map(x=>[x.key,x.value]));$('worker').value=safeLocalStorage.getItem('worker')||'';$('session').value=safeLocalStorage.getItem('session')||new Date().getFullYear()+'年度盘库';persistedDraft=meta.activeDraft||null;lastLocation=meta.lastLocation||null;workingFloor=validFloor(meta.workingFloor)?Number(meta.workingFloor):(validFloor(lastLocation?.floor)?Number(lastLocation.floor):floorFromLevel(lastLocation?.level));refreshStats()}
 function refreshStats(){const stats={shelfCount:shelves.filter(x=>!x.deleted).length,recordCount:records.length,catalogCount:catalog.length,catalogInfo:meta.catalogName?`${meta.catalogName} · ${catalog.length} 行 · ${meta.snapshotId||''}`:'尚未导入库存基准'};for(const [id,value] of Object.entries(stats)){const el=$(id);if(el)el.textContent=value;else console.warn('Missing optional UI element:',id)}}
 function go(view){if(tempEdit&&view!=='count'){showToast('请先确认或返回临时修改');return}for(const e of document.querySelectorAll('.view'))e.classList.toggle('active',e.id===view);for(const e of document.querySelectorAll('nav button'))e.classList.toggle('active',e.dataset.view===view);if(view==='history'){renderHistory();renderShelves()}if(view==='count'){renderStep();scheduleDraftSave()}window.scrollTo({top:0,behavior:'instant'})}
 function pad2(s){const n=String(s).trim();return /^\d{1,2}$/.test(n)?n.padStart(2,'0'):n}
@@ -294,7 +344,19 @@ function uniqueParts(rows){let d=new Map();for(const r of rows){const k=r.erp+'|
 function element(tag,props={},text){const e=document.createElement(tag);for(const[k,v]of Object.entries(props)){if(k==='class')e.className=v;else if(k==='onclick')e.addEventListener('click',v);else e.setAttribute(k,v)}if(text!==undefined)e.textContent=text;return e}
 function blockTitle(name,hint=''){const d=element('div');d.append(element('h2',{class:'step-title'},name));if(hint)d.append(element('p',{class:'step-hint'},hint));return d}
 function keyGrid(values,selected,fn,three=false){const d=element('div',{class:'keys'+(three?' three':'')});for(const s of values){const b=element('button',{class:'key'+(s===selected?' selected':''),type:'button',onclick:()=>{fn(s);if(!tempEdit&&step>=STAGE.col&&step<=STAGE.partition)step++;renderStep()}},s);d.append(b)}return d}
-function entry(current,placeholder,handler,type='text',fieldKey=''){const d=element('div',{class:'entry-block'});const x=element('input',{placeholder,type,autocapitalize:'off',autocomplete:'off'});if(fieldKey)x.dataset.draftField=fieldKey;x.value=current;x.addEventListener('input',()=>{handler(x.value);updateLocationView();if(step===STAGE.suffix&&!tempEdit)$('skipBtn').textContent=form.suffix?'✓ 确认库位':'✓ 库位到此结束'});d.append(x);return d}
+function entry(current,placeholder,handler,type='text',fieldKey=''){const d=element('div',{class:'entry-block'});const x=element('input',{placeholder,type,autocapitalize:'off',autocomplete:'off'});if(fieldKey)x.dataset.draftField=fieldKey;x.value=current;x.addEventListener('input',()=>{handler(x.value);updateLocationView();if(step===STAGE.suffix&&!tempEdit)$('skipBtn').textContent=form.suffix?'✓ 确认库位':'✓ 库位到此结束'});d.append(x);if(fieldKey){d.append(clearAction('清空'+({suffix:'备注号',erp:'ERP No.',partNo:'Part No.',qty:'数量'}[fieldKey]||'内容'),()=>{x.value='';handler('');updateLocationView();refreshSaveAction();scheduleDraftSave();x.focus()}))}return d}
+function clearAction(text,handler,detail=''){
+ const wrap=element('div',{class:'clear-wrap'});
+ const b=element('button',{class:'clear-field',type:'button',onclick:handler});
+ b.append(element('span',{'aria-hidden':'true'},'×'),document.createTextNode(' '+text));
+ wrap.append(b);
+ if(detail)wrap.append(element('small',{class:'mini muted'},detail));
+ return wrap;
+}
+function clearCurrentLocationField(field){
+ setLocationField(field,'');
+ renderStep();
+}
 function selection(label,detail,selected,fn){const e=element('div',{class:'choice'+(selected?' selected':''),onclick:fn});const circle=element('span',{},selected?'◉':'◯');circle.style.color=selected?'#2777b2':'#8a99a5';const txt=element('div');txt.append(element('b',{},label));if(detail)txt.append(element('small',{},detail));e.append(circle,txt);return e}
 function normalizeCode(v){return String(v??'').toUpperCase().replace(/[^A-Z0-9]/g,'')}
 function locationRank(c){
@@ -312,7 +374,7 @@ function locationRank(c){
 function selectPart(c){
  const changed=form.partKey!==(c.erp+'|'+c.partNo);
  form.partKey=c.erp+'|'+c.partNo;form.erp=c.erp||'';form.partNo=c.partNo||'';form.partName=c.name||'';
- if(changed&&!tempEdit)for(const k of ['lengthCm','widthCm','heightCm','weightKg'])form[k]='';
+ if(changed&&!tempEdit&&['lengthCm','widthCm','heightCm','weightKg'].some(k=>form[k]!==''))showToast('零件已更换，请核对原有尺寸与重量');
  if(!tempEdit)step=STAGE.measure;renderStep();
 }
 function renderPartResults(host){
@@ -362,6 +424,7 @@ function validMeasurements(){for(const [field,label] of [['lengthCm','长'],['wi
  if(!/^(?:\d+(?:[.,]\d+)?|[.,]\d+)$/.test(text)||!Number.isFinite(measurementValue(text))||measurementValue(text)<=0||measurementValue(text)>1000000){showToast(label+'请输入大于0的数字，或留空');return false}
  }return true}
 function renderStep(){
+  if(!tempEdit)maxStageReached=Math.max(maxStageReached,step);
   const key=STEPS[step];
   document.body.classList.toggle('temp-edit',Boolean(tempEdit));
   document.body.classList.toggle('floor-stage',key==='floor');
@@ -373,13 +436,17 @@ function renderStep(){
   $('changeFloor').style.display=(step===STAGE.floor&&!tempEdit)?'none':'';
   const a=$('stepArea');a.replaceChildren();
   $('backBtn').style.visibility='visible';
-  $('backBtn').textContent=tempEdit?'返回 · 不修改':step===STAGE.part?'← 修改库位':'← 上一步';
+  $('backBtn').textContent=tempEdit?'取消本次修改':step===STAGE.part?'← 修改库位':'← 上一步';
   $('skipBtn').style.display=(step>=STAGE.row&&step<=STAGE.suffix&&form.col)||step===STAGE.measure?'block':'none';
   $('skipBtn').textContent=step===STAGE.measure?'跳过':step===STAGE.suffix&&form.suffix?'✓ 确认库位':'✓ 库位到此结束';
   if(tempEdit)$('skipBtn').style.display='none';
   $('skipBtn').classList.toggle('location-finish',!tempEdit&&step>=STAGE.row&&step<=STAGE.suffix);
-  $('nextBtn').textContent=step===STAGE.note?(editId?'保存修改并返回记录 ✓':'保存并继续 ✓'):step===STAGE.suffix?'确认库位 →':step===STAGE.measure?'下一步：数量 →':'继续 →';
-  if(tempEdit)$('nextBtn').textContent='确认修改 ✓';
+  $('nextBtn').textContent=step===STAGE.note?(editId?'✓ 保存记录并返回列表':'✓ 保存本条，开始下一条'):step===STAGE.suffix?'确认库位 →':step===STAGE.measure?'下一步：数量 →':'继续 →';
+  if(tempEdit)$('nextBtn').textContent='应用本项修改';
+  // Full-record saves have a single prominent style, distinct from draft-only edits.
+  $('nextBtn').classList.toggle('record-save',!tempEdit&&step===STAGE.note);
+  $('nextBtn').classList.toggle('node-apply',Boolean(tempEdit));
+  $('backBtn').classList.toggle('edit-cancel',Boolean(tempEdit));
   $('nextBtn').style.display=(tempEdit||step>STAGE.suffix)?'flex':'none';
   $('nextBtn').disabled=false;
   $('completeShelf').style.display=(!tempEdit&&step>=STAGE.row&&step<=STAGE.suffix&&form.col&&form.row)?'inline-flex':'none';
@@ -400,19 +467,23 @@ function renderStep(){
     a.append(blockTitle('选择货架号'));
     const max=['F','G'].includes(form.col)?8:form.col==='H'?13:12;
     a.append(keyGrid(Array.from({length:max},(_,i)=>pad2(i+1)),form.row,v=>setLocationField('row',v),true));
+    if(tempEdit)a.append(clearAction('清空货架号',()=>clearCurrentLocationField('row')));
   }
   if(key==='level'){
     a.append(blockTitle('选择高度'));
     const start=(currentFloor()-1)*4+1;
     a.append(keyGrid(Array.from({length:4},(_,i)=>pad2(start+i)),form.level,v=>setLocationField('level',v),true));
+    if(tempEdit)a.append(clearAction('清空高度',()=>clearCurrentLocationField('level')));
   }
   if(key==='slot'){
     a.append(blockTitle('选择箱号'));
     a.append(keyGrid(['01','02','03','04','05'],form.slot,v=>setLocationField('slot',v),true));
+    if(tempEdit)a.append(clearAction('清空箱号',()=>clearCurrentLocationField('slot')));
   }
   if(key==='partition'){
     a.append(blockTitle('选择箱层'));
     a.append(keyGrid(['I','II','III'],form.partition,v=>setLocationField('partition',v),true));
+    if(tempEdit)a.append(clearAction('清空箱层',()=>clearCurrentLocationField('partition')));
   }
   if(key==='suffix'){
     a.append(blockTitle('备注号（可选）'));
@@ -443,6 +514,7 @@ function renderStep(){
   manual.append(element('label',{},'Part No.'));
   manual.append(entry(form.partNo,'Part No.',v=>{form.partNo=v.trim();form.partKey='';form.partName=''},'text','partNo'));
   a.append(manual);
+  if(form.erp||form.partNo||form.partKey)a.append(clearAction('清空已选零件',()=>{clearSelectedPart();renderStep();showToast('已清空临时零件选择，保存前需重新选定')}));
  }
  if(key==='measure'){
   a.append(blockTitle('尺寸与重量（选填）'));
@@ -455,7 +527,7 @@ function renderStep(){
     if(selected.referenceWeight)reference.append(element('small',{},'重量 '+selected.referenceWeight));
     if(Object.values(ref).some(v=>v!=='')){
       const use=element('button',{class:'ref-compact',type:'button',onclick:()=>{
-        for(const [k,v] of Object.entries(ref))if(v!=='')form[k]=v;
+        for(const [k,v] of Object.entries(ref))if(v!==''&&(!tempEdit||nodeById(tempEdit.target).fields.includes(k)))form[k]=v;
         renderStep();showToast('已填入参考值，请核对');
       }},'填入参考值');reference.append(use);
     }
@@ -477,15 +549,18 @@ function renderStep(){
       const inputs=[...a.querySelectorAll('.measure-section input')],idx=inputs.indexOf(input);
       if(idx<inputs.length-1)inputs[idx+1].focus();else{input.blur();if(!tempEdit)next()}
     });
-    wrap.append(input);return wrap;
+    wrap.append(input);
+    const clear=element('button',{class:'measure-clear',type:'button','aria-label':`清空${label}`,onclick:()=>{form[field]='';input.value='';refreshSaveAction();scheduleDraftSave();input.focus()}},'× 清空');
+    wrap.append(clear);return wrap;
   }
   for(const [field,label] of [['lengthCm','长'],['widthCm','宽'],['heightCm','高']])dimGrid.append(numericField(field,label));
   dims.append(dimGrid);weightBox.append(numericField('weightKg','重量',true));
   if(!tempEdit||tempEdit.target==='dimensions')a.append(dims);
   if(!tempEdit||tempEdit.target==='weight')a.append(weightBox);
+  if(!tempEdit||tempEdit.target==='dimensions')a.append(clearAction('清空全部尺寸',()=>{for(const k of ['lengthCm','widthCm','heightCm'])form[k]='';renderStep()}));
  }
 if(key==='qty'){a.append(blockTitle('实际数量','0 表示已检查但无货'));a.append(entry(form.qty,'数量，例如 12',v=>form.qty=v,'number','qty'));const plus=element('div',{class:'keys three'});for(const n of ['1','2','3','4','5','6','7','8','9','清除','0','⌫']){plus.append(element('button',{class:'key',onclick:()=>{if(n==='清除')form.qty='';else if(n==='⌫')form.qty=form.qty.slice(0,-1);else form.qty+=n;renderStep()}},n))}a.append(plus)}
-if(key==='note'){a.append(blockTitle('备注（可选）'));const t=element('textarea',{placeholder:'输入备注，不需要可留空',rows:'4'});t.value=form.note;t.dataset.draftField='note';t.addEventListener('input',()=>form.note=t.value);a.append(t);const s=element('div',{class:'panel'});const dims=['lengthCm','widthCm','heightCm'].map(k=>form[k]||'—').join(' × ');s.append(element('h3',{},'保存前核对'),element('p',{class:'mini'},`库位：${canonical(form)}\nPart No.：${form.partNo||'—'}\nERP：${form.erp||'—'}\n尺寸：${dims} cm · 重量：${form.weightKg||'—'} kg\n数量：${form.qty}`));s.style.whiteSpace='pre-line';if(!tempEdit)a.append(s)}
+if(key==='note'){a.append(blockTitle('备注（可选）'));const t=element('textarea',{placeholder:'输入备注，不需要可留空',rows:'4'});t.value=form.note;t.dataset.draftField='note';t.addEventListener('input',()=>form.note=t.value);a.append(t);a.append(clearAction('清空备注',()=>{form.note='';t.value='';refreshSaveAction();scheduleDraftSave();t.focus()}));const s=element('div',{class:'panel'});const dims=['lengthCm','widthCm','heightCm'].map(k=>form[k]||'—').join(' × ');s.append(element('h3',{},'保存前核对'),element('p',{class:'mini'},`库位：${canonical(form)}\nPart No.：${form.partNo||'—'}\nERP：${form.erp||'—'}\n尺寸：${dims} cm · 重量：${form.weightKg||'—'} kg\n数量：${form.qty}`));s.style.whiteSpace='pre-line';if(!tempEdit)a.append(s)}
  refreshSaveAction();
 }
 function validStep(){
@@ -508,7 +583,7 @@ function stopLocation(){
   const i=step-1;
   const from=String(form[FIELDS[i]]||'').trim()?i+1:i;
   for(let j=Math.max(0,from);j<FIELDS.length;j++)form[FIELDS[j]]='';
-  resetDependentData();step=STAGE.part;renderStep();
+  step=STAGE.part;renderStep();
 }
 function keepPrefix(){
   const prev={...form};form=empty();form.floor=Number(prev.floor)||workingFloor;
@@ -544,9 +619,9 @@ async function saveRecord(proposed=form){
    try{await req('metadata','put',{key:'lastLocation',value:clone(proposed)})}catch(e){console.warn('Could not persist last location',e)}
    lastLocation=clone(proposed);
   }
-  editId=null;tempEdit=null;focusBookmark=null;partSearch='';
+  editId=null;tempEdit=null;focusBookmark=null;partSearch='';maxStageReached=0;
   document.body.classList.remove('temp-edit');
-  localStorage.setItem('worker',who);localStorage.setItem('session',session);
+  safeLocalStorage.setItem('worker',who);safeLocalStorage.setItem('session',session);
   await load();
   if(wasEditing){
    form=empty();form.floor=workingFloor;
@@ -564,26 +639,26 @@ async function saveRecord(proposed=form){
 }
 function startNew(){
  const who=$('worker').value.trim();if(!who){showToast('请先填写盘点人');return}
- const session=$('session').value.trim();localStorage.setItem('worker',who);localStorage.setItem('session',session);
+ const session=$('session').value.trim();safeLocalStorage.setItem('worker',who);safeLocalStorage.setItem('session',session);
  // Never silently discard unfinished work, including partly typed search and notes.
  const d=persistedDraft;
  if(d&&d.form&&hasUnfinishedInput(d)&&d.worker===who&&d.session===session&&confirm('检测到本机未完成的盘点草稿。\n点击「确定」继续上次输入；点击「取消」开始新记录。')){
-  form={...empty(),...clone(d.form)};step=Math.max(0,Math.min(STEPS.length-1,Number(d.step)||0));partSearch=String(d.partSearch||'');editId=d.editId||null;
+  form={...empty(),...clone(d.form)};step=Math.max(0,Math.min(STEPS.length-1,Number(d.step)||0));maxStageReached=Math.max(step,Number(d.maxStageReached)||step);partSearch=String(d.partSearch||'');editId=d.editId||null;
   tempEdit=null;go('count');return;
  }
- form=empty();form.floor=workingFloor;editId=null;partSearch='';tempEdit=null;
+ form=empty();form.floor=workingFloor;editId=null;partSearch='';tempEdit=null;maxStageReached=0;
  if(lastLocation){const originalFloor=Number(lastLocation.floor)||floorFromLevel(lastLocation.level);if(!workingFloor||!originalFloor||workingFloor===originalFloor){form.col=lastLocation.col||'';form.row=lastLocation.row||''}}
  step=form.floor?(form.col&&form.row?STAGE.level:form.col?STAGE.row:STAGE.col):STAGE.floor;
  go('count');scheduleDraftSave();
 }
 function renderHistory(){const list=$('recordsList');list.replaceChildren();for(const r of [...records].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))){const e=element('div',{class:'rec'}),top=element('div',{class:'top'});top.append(element('strong',{},r.location),element('b',{},r.qty+' 个'));e.append(top,element('div',{class:'meta'},`Part No.: ${r.partNo||'—'} · ERP: ${r.erp||'—'}\n${r.physicalFloor?r.physicalFloor+'F · ':''}${r.worker} · ${r.updatedAt.slice(0,16).replace('T',' ')}${[r.lengthCm,r.widthCm,r.heightCm,r.weightKg].some(v=>v!==null&&v!==undefined&&v!=='')?'\n长×宽×高：'+[r.lengthCm,r.widthCm,r.heightCm].map(v=>v??'—').join('×')+' cm，重量 '+(r.weightKg??'—')+' kg':''} ${r.note?'\n备注：'+r.note:''}`));e.querySelector('.meta').style.whiteSpace='pre-line';const bs=element('div',{class:'buttons'});bs.append(element('button',{onclick:()=>editRecord(r)},'修改'),element('button',{onclick:()=>deleteRecord(r)},'撤销'));e.append(bs);list.append(e)}if(!records.length)list.append(element('p',{class:'muted'},'还没有本地盘点记录。'))}
-function editRecord(r){form={...empty(),...r.locationFields,floor:Number(r.physicalFloor)||floorFromLevel(r.locationFields?.level)||workingFloor,erp:r.erp,partNo:r.partNo,partName:r.partName,lengthCm:r.lengthCm??'',widthCm:r.widthCm??'',heightCm:r.heightCm??'',weightKg:r.weightKg??'',qty:String(r.qty),mode:r.mode,originalLocation:r.originalLocation,note:r.note};editId=r.id;partSearch='';step=STAGE.part;tempEdit=null;go('count')}
+function editRecord(r){form={...empty(),...r.locationFields,floor:Number(r.physicalFloor)||floorFromLevel(r.locationFields?.level)||workingFloor,erp:r.erp,partNo:r.partNo,partName:r.partName,lengthCm:r.lengthCm??'',widthCm:r.widthCm??'',heightCm:r.heightCm??'',weightKg:r.weightKg??'',qty:String(r.qty),mode:r.mode,originalLocation:r.originalLocation,note:r.note};editId=r.id;partSearch='';step=STAGE.part;maxStageReached=STAGE.note;tempEdit=null;go('count')}
 async function deleteRecord(r){if(!confirm(`确定撤销 ${r.location} / ${r.erp||r.partNo} / ${r.qty} 的记录？`))return;await req('records','put',{...r,deleted:true,updatedAt:new Date().toISOString()});await load();renderHistory();showToast('记录已撤销（导出时不会计算）')}
 function download(name,obj){const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json;charset=utf-8'});const url=URL.createObjectURL(blob);const a=element('a',{href:url,download:name});document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000)}
-async function exportRecords(){const raw=await all('records');const finished=await all('shelves');if(!raw.length&&!finished.length){showToast('尚无记录');return}const who=(localStorage.getItem('worker')||'employee').replace(/[^\w\u4e00-\u9fff-]/g,'_');const date=new Date().toISOString().slice(0,10);download(`stockcount_${date}_${who}.json`,{format:'hangcha-stockcount-export',version:2,exportedAt:new Date().toISOString(),snapshotId:meta.snapshotId||'',records:raw,shelfCompletions:finished});showToast('已生成 JSON 文件，请通过手机分享给电脑')}
+async function exportRecords(){const raw=await all('records');const finished=await all('shelves');if(!raw.length&&!finished.length){showToast('尚无记录');return}const who=(safeLocalStorage.getItem('worker')||'employee').replace(/[^\w\u4e00-\u9fff-]/g,'_');const date=new Date().toISOString().slice(0,10);download(`stockcount_${date}_${who}.json`,{format:'hangcha-stockcount-export',version:2,exportedAt:new Date().toISOString(),snapshotId:meta.snapshotId||'',records:raw,shelfCompletions:finished});showToast('已生成 JSON 文件，请通过手机分享给电脑')}
 function currentShelf(){const c=form.col||'';const r=form.row||'';return c&&r?c+r:''}
 async function completeShelf(){const shelf=currentShelf();if(!shelf){showToast('请先选择列和货架号');return}const worker=$('worker').value.trim();const session=$('session').value.trim();if(!worker){showToast('请先填写盘点人');return}if(!confirm(`确认 ${currentFloor()}F · ${shelf} 的盘点已完成？\n这只是完成标记，不代表所有货物数量正确，也不阻止后续补盘。`))return;const id=crypto.randomUUID(),now=new Date().toISOString();await req('shelves','put',{id,shelf,physicalFloor:currentFloor(),worker,session,snapshotId:meta.snapshotId||'',completedAt:now,updatedAt:now,deleted:false});await load();showToast(`${currentFloor()}F · ${shelf} 已标记完成，导出时会一并提交`)}
 function renderShelves(){const list=$('shelfList');if(!list)return;list.replaceChildren();for(const t of shelves.filter(x=>!x.deleted).sort((a,b)=>b.completedAt.localeCompare(a.completedAt)).slice(0,30)){const d=element('div',{class:'rec'});d.append(element('strong',{},`${t.physicalFloor?t.physicalFloor+'F · ':''}${t.shelf}`),element('p',{class:'mini muted'},`${t.worker} · ${t.session} · ${t.completedAt.slice(0,16).replace('T',' ')}`));d.append(element('button',{class:'tiny',onclick:async()=>{if(!confirm(`撤销 ${t.shelf} 的已完成标记？`))return;await req('shelves','put',{...t,deleted:true,updatedAt:new Date().toISOString()});await load();renderShelves()}},'撤销标记'));list.append(d)}}
 async function importCatalog(file){if(!file)return;try{const data=JSON.parse(await file.text());if(data.format!=='hangcha-stockcount-catalog'||!Array.isArray(data.items))throw Error('库存文件格式不正确，请用电脑工具生成');if(data.items.length>120000)throw Error('库存行数超出安全限制');if(!confirm(`导入 ${data.items.length} 条库存记录？将替换手机当前库存基准，但不删除已盘点数据。`))return;const tx=db.transaction(['catalog','metadata'],'readwrite');tx.objectStore('catalog').clear();data.items.forEach((r,i)=>tx.objectStore('catalog').put({key:i,erp:String(r.erp||''),partNo:String(r.partNo||''),name:String(r.name||''),location:String(r.location||'').trim().toUpperCase(),locations:Array.isArray(r.locations)?r.locations.map(x=>String(x).trim().toUpperCase()):[],bookQty:r.bookQty??null,referenceDimensions:String(r.referenceDimensions||''),referenceWeight:String(r.referenceWeight||'')}));tx.objectStore('metadata').put({key:'catalogName',value:file.name});tx.objectStore('metadata').put({key:'snapshotId',value:data.snapshotId||''});await new Promise((res,rej)=>{tx.oncomplete=res;tx.onerror=()=>rej(tx.error)});await load();showToast('库存基准已缓存在手机中，可离线联想')}catch(e){alert('导入失败：'+e.message)}}
-async function init(){try{db=await openDB()}catch(e){alert('无法打开手机本地数据库（IndexedDB）。请确认不是无痕浏览，并在普通 Safari/Chrome 中重试。错误：'+(e?.message||e));return}try{await load()}catch(e){console.error('StockCount initialization failed:',e);alert('盘库 App 初始化失败（不一定是 IndexedDB 问题），请先备份已有记录，再检查版本或联系管理员。错误：'+(e?.message||e));return}for(const el of document.querySelectorAll('nav button'))el.addEventListener('click',()=>go(el.dataset.view));$('start').onclick=startNew;$('catalogFile').onchange=e=>importCatalog(e.target.files[0]);$('nextBtn').onclick=next;$('finishBtn').onclick=saveDirect;$('completeShelf').onclick=completeShelf;$('skipBtn').onclick=()=>{if(step===STAGE.measure){for(const k of ['lengthCm','widthCm','heightCm','weightKg'])form[k]='';step=STAGE.qty;renderStep()}else stopLocation()};$('backBtn').onclick=backStep;$('changeFloor').onclick=()=>switchTempEdit('floor');for(const id of ['exportHome','exportHistory','exportSettings'])$(id).onclick=exportRecords;$('persistBtn').onclick=async()=>{if(!navigator.storage?.persist){$('persistStatus').textContent='当前浏览器不支持存储持久化请求';return}const yes=await navigator.storage.persist();$('persistStatus').textContent=yes?'浏览器已允许持久化存储（仍建议备份）':'浏览器未授予持久化，请频繁导出备份'};$('clearRecords').onclick=async()=>{if(!confirm('危险：这将删除本机全部盘点记录。确定已经备份到电脑？'))return;if(prompt('再次输入 DELETE 确认')!=='DELETE')return;const tx=db.transaction(['records','shelves'],'readwrite');tx.objectStore('records').clear();tx.objectStore('shelves').clear();await new Promise((r,j)=>{tx.oncomplete=r;tx.onerror=j});await load();showToast('本机盘点记录已清空')};$('worker').addEventListener('change',()=>localStorage.setItem('worker',$('worker').value.trim()));$('session').addEventListener('change',()=>localStorage.setItem('session',$('session').value.trim()));document.addEventListener('focusin',e=>noteInputFocus(e.target));document.addEventListener('keyup',e=>noteInputFocus(e.target));document.addEventListener('selectionchange',()=>noteInputFocus(document.activeElement));document.addEventListener('input',e=>{noteInputFocus(e.target);if($('count').classList.contains('active')){updateLocationView();refreshSaveAction();scheduleDraftSave()}});document.addEventListener('change',()=>{if($('count').classList.contains('active')){refreshSaveAction();scheduleDraftSave()}});document.addEventListener('pagehide',()=>{if(db)persistDraft()});document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&db)persistDraft()});if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});}
+async function init(){try{db=await openDB()}catch(e){alert('无法打开手机本地数据库（IndexedDB）。请确认不是无痕浏览，并在普通 Safari/Chrome 中重试。错误：'+(e?.message||e));return}try{await load()}catch(e){console.error('StockCount initialization failed:',e);alert('盘库 App 初始化失败（不一定是 IndexedDB 问题），请先备份已有记录，再检查版本或联系管理员。错误：'+(e?.message||e));return}for(const el of document.querySelectorAll('nav button'))el.addEventListener('click',()=>go(el.dataset.view));$('start').onclick=startNew;$('catalogFile').onchange=e=>importCatalog(e.target.files[0]);$('nextBtn').onclick=next;$('finishBtn').onclick=saveDirect;$('completeShelf').onclick=completeShelf;$('skipBtn').onclick=()=>{if(step===STAGE.measure){step=STAGE.qty;renderStep()}else stopLocation()};$('backBtn').onclick=backStep;$('changeFloor').onclick=()=>switchTempEdit('floor');for(const id of ['exportHome','exportHistory','exportSettings'])$(id).onclick=exportRecords;$('persistBtn').onclick=async()=>{if(!navigator.storage?.persist){$('persistStatus').textContent='当前浏览器不支持存储持久化请求';return}const yes=await navigator.storage.persist();$('persistStatus').textContent=yes?'浏览器已允许持久化存储（仍建议备份）':'浏览器未授予持久化，请频繁导出备份'};$('clearRecords').onclick=async()=>{if(!confirm('危险：这将删除本机全部盘点记录。确定已经备份到电脑？'))return;if(prompt('再次输入 DELETE 确认')!=='DELETE')return;const tx=db.transaction(['records','shelves'],'readwrite');tx.objectStore('records').clear();tx.objectStore('shelves').clear();await new Promise((r,j)=>{tx.oncomplete=r;tx.onerror=j});await load();showToast('本机盘点记录已清空')};$('worker').addEventListener('change',()=>safeLocalStorage.setItem('worker',$('worker').value.trim()));$('session').addEventListener('change',()=>safeLocalStorage.setItem('session',$('session').value.trim()));document.addEventListener('focusin',e=>noteInputFocus(e.target));document.addEventListener('keyup',e=>noteInputFocus(e.target));document.addEventListener('selectionchange',()=>noteInputFocus(document.activeElement));document.addEventListener('input',e=>{noteInputFocus(e.target);if($('count').classList.contains('active')){updateLocationView();refreshSaveAction();scheduleDraftSave()}});document.addEventListener('change',()=>{if($('count').classList.contains('active')){refreshSaveAction();scheduleDraftSave()}});document.addEventListener('pagehide',()=>{if(db)persistDraft()});document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&db)persistDraft()});if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});}
 init();
