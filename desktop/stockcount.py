@@ -91,9 +91,11 @@ def timekey(v):
     return t
 
 def read_exports(paths):
+    return read_export_documents([(str(p),json.loads(Path(p).read_text(encoding='utf-8-sig'))) for p in paths])
+
+def read_export_documents(documents):
     versions=defaultdict(list); shelves=defaultdict(list)
-    for p in paths:
-        d=json.loads(Path(p).read_text(encoding='utf-8-sig'))
+    for p,d in documents:
         if d.get('format')!='hangcha-stockcount-export' or d.get('version')!=2 or not isinstance(d.get('records'),list): raise ValueError(f'不支持的导出格式: {p}')
         for collection,target in [(d['records'],versions),(d.get('shelfCompletions',[]),shelves)]:
             for r in collection:
@@ -382,4 +384,5 @@ class App:
         messagebox.showinfo('成功','新库存 Excel 已生成并通过库存数量公式校验。\n'+out)
 
 if __name__=='__main__':
-    root=tk.Tk(); App(root); root.mainloop()
+    from merge_manager import main
+    main()
