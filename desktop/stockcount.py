@@ -9,6 +9,53 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
 ZERO='盘库前归零'; IN='盘库入库'
+DEFAULT_SHEET='库存已有备件'
+DEFAULT_HEADERS={
+    'erp':'商品明细码ERP', 'partNo':'Part.No.', 'stock':'存',
+    'location':'Rack No.', 'name':'Description', 'nameCn':'Des china',
+    'weight':'重量', 'size':'尺寸 cm', 'incomingTotal':"Q'TY 总计", 'sold':'销',
+    'materialNote':'物料码  备注', 'costUsd':'成本单价 USD',
+    'costEur':'成本单价 EUR', 'inventoryCostEur':'当前库存成本总计 EUR',
+}
+REQUIRED_HEADERS={'erp','partNo','stock'}
+
+def header_norm(v):
+    # Normalize whitespace only for headers, never for part identities.
+    return ' '.join(norm(v).split())
+
+def header_matches(headers,name):
+    key=header_norm(name)
+    return [i for i,v in enumerate(headers,1) if key and header_norm(v)==key]
+
+def detect_header(candidates):
+    # Require a unique high-confidence row; never silently select tied rows.
+    scores={r:sum(bool(header_matches(values,v)) for v in DEFAULT_HEADERS.values()) for r,values in candidates.items()}
+    if not scores: return None
+    best=max(scores.values())
+    rows=[r for r,v in scores.items() if v==best]
+    return rows[0] if best>=3 and len(rows)==1 else None
+
+def resolve_columns(headers,mapping):
+    cols={}
+    for k,v in mapping.items():
+        if not v: continue
+        if isinstance(v,dict):
+            c=v.get('column'); label=v.get('header')
+            if type(c) is not int or not 1<=c<=len(headers) or not header_norm(label) or header_norm(headers[c-1])!=header_norm(label):
+                raise ValueError(f'字段 {k} 所选列已变化，请重新配置')
+            cols[k]=c
+        else:
+            matches=header_matches(headers,v)
+            if len(matches)!=1: raise ValueError(f'表头 {v} 不存在或不唯一')
+            cols[k]=matches[0]
+    if not REQUIRED_HEADERS.issubset(cols) or len(set(cols.values()))!=len(cols):
+        raise ValueError('ERP、Part No.、存必须配置且不可重复映射')
+    return cols
+
+def sheet_headers(ws,row,lastcol):
+    values=ws.Range(ws.Cells(row,1),ws.Cells(row,lastcol)).Value2
+    return list(values[0]) if isinstance(values,tuple) else [values]
+
 def norm(v):
     if isinstance(v,float) and v.is_integer(): v=int(v)
     return str(v if v is not None else '').strip().upper()
@@ -107,15 +154,9 @@ def excel(path):
 def scan(path,sheet,header,mapping):
     with excel(path) as (app,wb):
         ws=wb.Worksheets(sheet); used=ws.UsedRange; lastcol=used.Column+used.Columns.Count-1; lastrow=used.Row+used.Rows.Count-1
-        headers=[norm(ws.Cells(header,c).Value2) for c in range(1,lastcol+1)]
-        if norm(ZERO) in headers or norm(IN) in headers: raise ValueError('源表已包含盘库调整列，请使用未调整的盘库前原表')
-        cols={}
-        for k,v in mapping.items():
-            if not v: continue
-            matches=[i+1 for i,h in enumerate(headers) if h==norm(v)]
-            if len(matches)!=1: raise ValueError(f'表头 {v} 不存在或不唯一')
-            cols[k]=matches[0]
-        if not all(k in cols for k in ('erp','partNo','stock')) or len(set(cols.values()))!=len(cols): raise ValueError('ERP、Part No.、存必须配置且不可重复映射')
+        headers=sheet_headers(ws,header,lastcol)
+        if header_matches(headers,ZERO) or header_matches(headers,IN): raise ValueError('源表已包含盘库调整列，请使用未调整的盘库前原表')
+        cols=resolve_columns(headers,mapping)
         if lastrow<=header: raise ValueError('无数据行')
         app.CalculateFullRebuild()
         values=ws.Range(ws.Cells(header+1,1),ws.Cells(lastrow,lastcol)).Value2
@@ -163,7 +204,7 @@ def write_stock(path,out,sheet,header,cols,lastcol,rows,result,expected_hash,upd
 
 class App:
     def __init__(self,root):
-        self.root=root; root.title('Hangcha StockCount · 年度盘库管理 v0.5.0'); root.geometry('1280x760'); self.rows={}; self.decisions={}; self.paths=[]; self.items=[]; self.source=''; self.hash=''; self.new={}
+        self.root=root; root.title('Hangcha StockCount · 年度盘库管理 v0.5.1'); root.geometry('1280x760'); self.rows={}; self.decisions={}; self.paths=[]; self.items=[]; self.source=''; self.hash=''; self.new={}
         bar=ttk.Frame(root,padding=10); bar.pack(fill='x')
         for text,fn in [('1 导入库存表',self.baseline),('2 导入员工 JSON',self.imports),('3 保存项目',self.save),('打开项目',self.load),('生成手机基准',self.catalog),('4 生成新库存表',self.generate)]: ttk.Button(bar,text=text,command=lambda f=fn:self.safe(f)).pack(side='left',padx=3)
         self.info=tk.StringVar(value='请先导入冻结的盘库前库存 Excel'); ttk.Label(root,textvariable=self.info,padding=8).pack(fill='x')
@@ -180,14 +221,60 @@ class App:
     def baseline(self):
         p=filedialog.askopenfilename(filetypes=[('Excel','*.xlsx *.xlsm')]);
         if not p:return
-        sheet=simpledialog.askstring('工作表','库存工作表名称（精确）'); header=simpledialog.askinteger('表头','表头所在行',initialvalue=1,minvalue=1)
-        if not sheet or header is None:return
-        mapping={}
-        for key,label,default in [('erp','ERP 编号','Code No.'),('partNo','零件编号','Part No.'),('stock','存','存'),('location','库位（可留空）','库位'),('name','名称（可留空）','')]:
-            v=simpledialog.askstring('表头映射',label,initialvalue=default)
-            if v is None:return
-            mapping[key]=v.strip()
+        selected=self.detect_base(p)
+        if selected is None:return
+        sheet,header,mapping=selected
         self.set_base(p,sheet,header,mapping); self.decisions={}; self.paths=[]; self.refresh()
+    def detect_base(self,p):
+        with excel(p) as (app,wb):
+            names=[wb.Worksheets(i).Name for i in range(1,wb.Worksheets.Count+1)]
+            sheet=DEFAULT_SHEET
+            if sheet not in names:
+                sheet=simpledialog.askstring('选择库存子表','未找到默认子表：'+DEFAULT_SHEET+'\n现有子表：\n'+'\n'.join(names)+'\n请输入实际子表名称：',parent=self.root)
+                if sheet is None:return None
+                if sheet not in names:raise ValueError('工作表名称不存在，请重新导入')
+            ws=wb.Worksheets(sheet); used=ws.UsedRange
+            lastcol=used.Column+used.Columns.Count-1; lastrow=used.Row+used.Rows.Count-1
+            start=used.Row; end=min(lastrow,start+49)
+            values=ws.Range(ws.Cells(start,1),ws.Cells(end,lastcol)).Value2
+            matrix=values if isinstance(values,tuple) else ((values,),)
+            header=detect_header({start+i:row for i,row in enumerate(matrix)})
+            if header is None:
+                header=simpledialog.askinteger('确认表头行','未能唯一识别表头行，请输入 Excel 实际表头行号。',initialvalue=start,minvalue=1,maxvalue=lastrow,parent=self.root)
+                if header is None:return None
+            headers=sheet_headers(ws,header,lastcol)
+            mapping={}; unresolved=[]
+            for key,name in DEFAULT_HEADERS.items():
+                matches=header_matches(headers,name)
+                if len(matches)==1: mapping[key]=name
+                else: unresolved.append((key,name,matches))
+            occupied=set(resolve_columns(headers,mapping).values()) if REQUIRED_HEADERS.issubset(mapping) else {header_matches(headers,v)[0] for v in mapping.values()}
+            for key,name,matches in unresolved:
+                choices=[(i,str(v)) for i,v in enumerate(headers,1) if header_norm(v) and i not in occupied]
+                if matches: choices=[(i,v) for i,v in choices if i in matches]
+                chosen=self.choose_column(name,choices,key not in REQUIRED_HEADERS,bool(matches))
+                if chosen is None:return None
+                if chosen==0:continue
+                mapping[key]={'column':chosen,'header':str(headers[chosen-1])}; occupied.add(chosen)
+            resolve_columns(headers,mapping)
+            return sheet,header,mapping
+    def choose_column(self,name,choices,optional,duplicate):
+        dialog=tk.Toplevel(self.root); dialog.title('确认表头映射'); dialog.transient(self.root); dialog.grab_set()
+        dialog.geometry('680x240'); dialog.resizable(True,False)
+        ttk.Label(dialog,text=f'默认表头「{name}」'+('有多个匹配，请选择正确列。' if duplicate else '未找到，请选择实际表头。'),padding=12,wraplength=650).pack(fill='x')
+        options=[f'第 {i} 列 | {v}' for i,v in choices]
+        combo=ttk.Combobox(dialog,values=options,state='readonly'); combo.pack(fill='x',padx=12,pady=8)
+        result=[None]
+        def finish():
+            idx=combo.current()
+            if idx<0:messagebox.showwarning('请选择','请选择实际对应的列',parent=dialog);return
+            result[0]=choices[idx][0]; dialog.destroy()
+        def skip():result[0]=0;dialog.destroy()
+        bar=ttk.Frame(dialog,padding=12);bar.pack(fill='x')
+        ttk.Button(bar,text='确认映射',command=finish).pack(side='left',padx=4)
+        if optional:ttk.Button(bar,text='此字段不存在，跳过',command=skip).pack(side='left',padx=4)
+        ttk.Button(bar,text='取消导入',command=dialog.destroy).pack(side='right',padx=4)
+        dialog.wait_window();return result[0]
     def set_base(self,p,sheet,header,mapping):
         h=filehash(p); rows,cols,last=scan(p,sheet,header,mapping)
         if filehash(p)!=h: raise ValueError('读取期间源文件变化')
@@ -205,7 +292,7 @@ class App:
         for x in self.items:
             if self.only and x['status']!='pending':continue
             r=x['record']; self.tree.insert('', 'end',iid=x['key'],values=(labels[x['status']],r.get('worker'),r.get('erp'),r.get('partNo'),x['location'],x['qty'],x['row'] or '',x['reason'],r.get('note','')),tags=(x['status'],))
-        self.info.set(f'库存行 {len(self.rows)} | 文件 {len(self.paths)} | 有效记录 {len(self.records)} | 待处理 {sum(x["status"]=="pending" for x in self.items)} | 批次 {self.batch or "未填写"} | 员工 {len({r.get("worker") for r in self.records})} | 删除记录 {sum(bool(r.get("deleted")) for r in self.allrecords)}')
+        self.info.set(f'子表 {self.sheet} / 表头第 {self.header} 行 | 库存行 {len(self.rows)} | 文件 {len(self.paths)} | 有效记录 {len(self.records)} | 待处理 {sum(x["status"]=="pending" for x in self.items)} | 批次 {self.batch or "未填写"} | 员工 {len({r.get("worker") for r in self.records})} | 删除记录 {sum(bool(r.get("deleted")) for r in self.allrecords)}')
     def accept(self):
         keys=self.tree.selection()
         if len(keys)!=1:raise ValueError('请选择一条记录')

@@ -1,6 +1,6 @@
 import unittest, tempfile, json
 from pathlib import Path
-from stockcount import read_exports, propose, totals, digest, locate
+from stockcount import read_exports, propose, totals, digest, locate, DEFAULT_HEADERS, DEFAULT_SHEET, detect_header, resolve_columns, header_matches
 
 ROWS={2:{'erp':'E1','partNo':'P1','stock':120},3:{'erp':'E2','partNo':'P2','stock':60},4:{'erp':'E3','partNo':'P3','stock':15}}
 def rec(id,qty=10,loc='A0104',**kw):
@@ -39,4 +39,35 @@ class Tests(unittest.TestCase):
         self.assertEqual(totals(propose([a,b],ROWS,d),ROWS)[2]['qty'],11)
     def test_invalid_qty(self):
         with self.assertRaises(ValueError): self.exports([rec('a',-1)])
+class HeaderTests(unittest.TestCase):
+    def test_actual_headers(self):
+        h=['重量','尺寸 cm','Rack No.','商品明细码ERP','Part.No.','Description','Des china']+['日期入库']*5+['','']+['日期入库']*7+["Q'TY 总计",'销','存','物料码\u00a0  备注','成本单价 USD','成本单价 EUR','当前库存成本总计 EUR','','']
+        self.assertEqual(DEFAULT_SHEET,'库存已有备件')
+        self.assertEqual(detect_header({1:h,2:['物料数据']}),1)
+        c=resolve_columns(h,DEFAULT_HEADERS)
+        self.assertEqual((c['erp'],c['partNo'],c['stock'],c['location']),(4,5,24,3))
+    def test_shifted_headers(self):
+        h=list(reversed(list(DEFAULT_HEADERS.values())))
+        self.assertEqual(detect_header({4:['标题'],5:h}),5)
+        self.assertEqual(resolve_columns(h,DEFAULT_HEADERS)['erp'],len(h))
+    def test_duplicate_header(self):
+        h=list(DEFAULT_HEADERS.values())+['存']
+        with self.assertRaises(ValueError): resolve_columns(h,DEFAULT_HEADERS)
+        m=dict(DEFAULT_HEADERS,stock={'column':len(h),'header':'存'})
+        self.assertEqual(resolve_columns(h,m)['stock'],len(h))
+        with self.assertRaises(ValueError): resolve_columns(h,dict(m,stock={'column':2,'header':'存'}))
+    def test_missing_and_manual_mapping(self):
+        h=list(DEFAULT_HEADERS.values());h[0]='ERP新名称'
+        self.assertEqual(detect_header({3:h}),3)
+        with self.assertRaises(ValueError): resolve_columns(h,DEFAULT_HEADERS)
+        self.assertEqual(resolve_columns(h,dict(DEFAULT_HEADERS,erp={'column':1,'header':'ERP新名称'}))['erp'],1)
+    def test_ambiguous_header_rows(self):
+        h=list(DEFAULT_HEADERS.values())
+        self.assertIsNone(detect_header({2:h,10:h}))
+        self.assertIsNone(detect_header({1:['重量','备注']}))
+    def test_optional_skip_and_no_reuse(self):
+        h=list(DEFAULT_HEADERS.values())
+        m={k:v for k,v in DEFAULT_HEADERS.items() if k!='weight'}
+        self.assertNotIn('weight',resolve_columns(h,m))
+        with self.assertRaises(ValueError):resolve_columns(h,dict(m,weight='存'))
 if __name__=='__main__':unittest.main()
