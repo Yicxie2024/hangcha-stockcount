@@ -1,4 +1,4 @@
-/* Hangcha StockCount Offline v0.4.4: swipe to discard unfinished count drafts, unified 3s undo. */
+/* Hangcha StockCount Offline v0.4.5: swipe to discard unfinished count drafts, unified 3s undo. */
 'use strict';
 const DB_NAME='hangcha-stockcount-01'; let db;let catalog=[];let meta={};let records=[];
 const STEPS=['floor','col','row','level','slot','partition','suffix','part','measure','qty','note'];
@@ -26,6 +26,8 @@ const NODE_GROUPS=[
 ];
 const NODES=NODE_GROUPS.flat();
 const nodeById=id=>NODES.find(x=>x.id===id);
+function parseQuantity(v){const s=String(v??'').trim().replace(',','.');if(!/^(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)$/.test(s))return NaN;const n=Number(s);return Number.isFinite(n)&&n>=0&&n<=Number.MAX_SAFE_INTEGER?n:NaN}
+function validQuantity(v){return Number.isFinite(parseQuantity(v))}
 function clone(v){return JSON.parse(JSON.stringify(v))}
 function savedDraft(){const x=tempEdit?{form:tempEdit.originalForm,step:tempEdit.originStep,partSearch:tempEdit.originalSearch}: {form,step,partSearch};return {version:2,form:clone(x.form),step:x.step,maxStageReached,partSearch:x.partSearch,editId,worker:$('worker')?.value.trim()||'',session:$('session')?.value.trim()||'',savedAt:new Date().toISOString()}}
 async function persistDraft(){if(!db)return;try{{const d=savedDraft();await req('metadata','put',{key:'activeDraft',value:d});persistedDraft=d}}catch(e){console.warn('Draft persistence failed',e)}}
@@ -108,7 +110,7 @@ function checkEditedValue(id,proposal){
    const n=measurementValue(s);if(s&&(!Number.isFinite(n)||n<=0||n>1000000))return '尺寸/重量必须大于0，或留空';
   }
  }
- if(id==='qty'&&String(proposal.qty)!==''&&(!/^(0|[1-9]\d*)$/.test(String(proposal.qty))||!Number.isSafeInteger(Number(proposal.qty))))return '请输入非负整数数量';
+ if(id==='qty'&&String(proposal.qty)!==''&&!validQuantity(proposal.qty))return '请输入非负数量（支持小数）';
  return '';
 }
 // Full-record saving is separate from confirming a single node. A temporary
@@ -149,7 +151,7 @@ function recordValidationError(x){
   if(!/^(?:\d+(?:[.,]\d+)?|[.,]\d+)$/.test(raw)||!Number.isFinite(value)||value<=0||value>1000000)return '尺寸或重量无效，请输入大于0的数字';
  }
  const qty=String(x.qty??'');
- if(!/^(0|[1-9]\d*)$/.test(qty)||!Number.isSafeInteger(Number(qty)))return '请填写有效的非负整数数量';
+ if(!validQuantity(qty))return '请填写有效的非负数量（支持小数）';
  return '';
 }
 function refreshSaveAction(){
@@ -344,7 +346,7 @@ function uniqueParts(rows){let d=new Map();for(const r of rows){const k=r.erp+'|
 function element(tag,props={},text){const e=document.createElement(tag);for(const[k,v]of Object.entries(props)){if(k==='class')e.className=v;else if(k==='onclick')e.addEventListener('click',v);else e.setAttribute(k,v)}if(text!==undefined)e.textContent=text;return e}
 function blockTitle(name,hint=''){const d=element('div');d.append(element('h2',{class:'step-title'},name));if(hint)d.append(element('p',{class:'step-hint'},hint));return d}
 function keyGrid(values,selected,fn,three=false){const d=element('div',{class:'keys'+(three?' three':'')});for(const s of values){const b=element('button',{class:'key'+(s===selected?' selected':''),type:'button',onclick:()=>{fn(s);if(tempEdit){exitTempEdit(true);return}if(step>=STAGE.col&&step<=STAGE.partition)step++;renderStep()}},s);d.append(b)}return d}
-function entry(current,placeholder,handler,type='text',fieldKey=''){const d=element('div',{class:'entry-block'});const x=element('input',{placeholder,type,autocapitalize:'off',autocomplete:'off'});if(fieldKey)x.dataset.draftField=fieldKey;x.value=current;x.addEventListener('input',()=>{handler(x.value);updateLocationView();if(step===STAGE.suffix&&!tempEdit)$('skipBtn').textContent=form.suffix?'✓ 确认库位':'✓ 库位到此结束'});d.append(x);if(fieldKey){d.append(clearAction('清空'+({suffix:'备注号',erp:'ERP No.',partNo:'Part No.',qty:'数量'}[fieldKey]||'内容'),()=>{x.value='';handler('');if(tempEdit){exitTempEdit(true);return}updateLocationView();refreshSaveAction();scheduleDraftSave();x.focus()}))}return d}
+function entry(current,placeholder,handler,type='text',fieldKey=''){const d=element('div',{class:'entry-block'});const x=element('input',{placeholder,type,autocapitalize:'off',autocomplete:'off'});if(fieldKey)x.dataset.draftField=fieldKey;if(fieldKey==='qty')x.setAttribute('inputmode','decimal');x.value=current;x.addEventListener('input',()=>{handler(x.value);updateLocationView();if(step===STAGE.suffix&&!tempEdit)$('skipBtn').textContent=form.suffix?'✓ 确认库位':'✓ 库位到此结束'});d.append(x);if(fieldKey){d.append(clearAction('清空'+({suffix:'备注号',erp:'ERP No.',partNo:'Part No.',qty:'数量'}[fieldKey]||'内容'),()=>{x.value='';handler('');if(tempEdit){exitTempEdit(true);return}updateLocationView();refreshSaveAction();scheduleDraftSave();x.focus()}))}return d}
 function clearAction(text,handler,detail=''){
  const wrap=element('div',{class:'clear-wrap'});
  const b=element('button',{class:'clear-field',type:'button',onclick:handler});
@@ -565,7 +567,7 @@ function renderStep(){
   if(!tempEdit||tempEdit.target==='dimensions')a.append(dims);
   if(!tempEdit||tempEdit.target==='weight')a.append(weightBox);
  }
-if(key==='qty'){a.append(blockTitle('实际数量','0 表示已检查但无货'));a.append(entry(form.qty,'数量，例如 12',v=>form.qty=v,'number','qty'));const plus=element('div',{class:'keys three'});for(const n of ['1','2','3','4','5','6','7','8','9','清除','0','⌫']){plus.append(element('button',{class:'key',onclick:()=>{if(n==='清除'){form.qty='';if(tempEdit){exitTempEdit(true);return}}else if(n==='⌫')form.qty=form.qty.slice(0,-1);else form.qty+=n;renderStep()}},n))}a.append(plus)}
+if(key==='qty'){a.append(blockTitle('实际数量','支持小数，例如 0.5 对；0 表示已检查但无货'));a.append(entry(form.qty,'数量，例如 12.5',v=>form.qty=v,'text','qty'));const plus=element('div',{class:'keys three'});for(const n of ['1','2','3','4','5','6','7','8','9','.','0','⌫']){plus.append(element('button',{class:'key',onclick:()=>{if(n==='清除'){form.qty='';if(tempEdit){exitTempEdit(true);return}}else if(n==='⌫')form.qty=form.qty.slice(0,-1);else if(n==='.') {if(!/[.,]/.test(form.qty))form.qty+=(form.qty?'':'0')+'.'}else form.qty+=n;renderStep()}},n))}a.append(plus)}
 if(key==='note'){a.append(blockTitle('备注（可选）'));const t=element('textarea',{placeholder:'输入备注，不需要可留空',rows:'4'});t.value=form.note;t.dataset.draftField='note';t.addEventListener('input',()=>form.note=t.value);a.append(t);a.append(clearAction('清空备注',()=>{form.note='';t.value='';if(tempEdit){exitTempEdit(true);return}refreshSaveAction();scheduleDraftSave();t.focus()}));const s=element('div',{class:'panel'});const dims=['lengthCm','widthCm','heightCm'].map(k=>form[k]||'—').join(' × ');s.append(element('h3',{},'保存前核对'),element('p',{class:'mini'},`库位：${canonical(form)}\nPart No.：${form.partNo||'—'}\nERP：${form.erp||'—'}\n尺寸：${dims} cm · 重量：${form.weightKg||'—'} kg\n数量：${form.qty}`));s.style.whiteSpace='pre-line';if(!tempEdit)a.append(s)}
  refreshSaveAction();
 }
@@ -579,7 +581,7 @@ function validStep(){
   if(k==='partition'&&form.partition&&!['I','II','III'].includes(form.partition)){showToast('箱层只允许 I、II、III');return false}
   if(k==='part'&&!form.erp&&!form.partNo){showToast('请选择或输入 ERP No. / Part No.');return false}
   if(k==='measure'&&!validMeasurements())return false;
-  if(k==='qty'&&(!/^(0|[1-9]\d*)$/.test(String(form.qty))||!Number.isSafeInteger(Number(form.qty)))){showToast('请输入非负整数数量');return false}
+  if(k==='qty'&&!validQuantity(form.qty)){showToast('请输入非负数量（支持小数）');return false}
   return true;
 }
 async function next(){if(savingRecord)return;if(tempEdit){exitTempEdit(true);return}if(!validStep())return;if(step===STAGE.note){await saveDirect();return}step++;renderStep()}
@@ -610,7 +612,7 @@ async function saveRecord(proposed=form){
   const now=new Date().toISOString();
   const original=wasEditing?records.find(r=>r.id===editId):null;
   if(wasEditing&&!original)throw Error('原始记录已不存在，无法保存修改');
-  const data={id:editId||crypto.randomUUID(),schemaVersion:1,session,worker:who,snapshotId:meta.snapshotId||'',location:savedLocation,physicalFloor:Number(proposed.floor),locationFields:Object.fromEntries(FIELDS.map(x=>[x,proposed[x]])),erp:proposed.erp.trim(),partNo:proposed.partNo.trim(),partName:proposed.partName||'',lengthCm:measurementValue(proposed.lengthCm),widthCm:measurementValue(proposed.widthCm),heightCm:measurementValue(proposed.heightCm),weightKg:measurementValue(proposed.weightKg),qty:Number(proposed.qty),mode:proposed.mode,originalLocation:proposed.originalLocation.trim(),note:proposed.note.trim(),updatedAt:now,createdAt:original?.createdAt||now,deleted:false};
+  const data={id:editId||crypto.randomUUID(),schemaVersion:1,session,worker:who,snapshotId:meta.snapshotId||'',location:savedLocation,physicalFloor:Number(proposed.floor),locationFields:Object.fromEntries(FIELDS.map(x=>[x,proposed[x]])),erp:proposed.erp.trim(),partNo:proposed.partNo.trim(),partName:proposed.partName||'',lengthCm:measurementValue(proposed.lengthCm),widthCm:measurementValue(proposed.widthCm),heightCm:measurementValue(proposed.heightCm),weightKg:measurementValue(proposed.weightKg),qty:parseQuantity(proposed.qty),mode:proposed.mode,originalLocation:proposed.originalLocation.trim(),note:proposed.note.trim(),updatedAt:now,createdAt:original?.createdAt||now,deleted:false};
   if(original){
    // Pressing save without changing anything must not manufacture a revision.
    const unchanged=['location','physicalFloor','erp','partNo','partName','lengthCm','widthCm','heightCm','weightKg','qty','note'].every(k=>String(original[k]??'')===String(data[k]??''));

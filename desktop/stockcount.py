@@ -3,12 +3,35 @@
 import json, hashlib, math, re, os, tempfile, sys
 from pathlib import Path
 from datetime import datetime
+from decimal import Decimal
 from collections import defaultdict
 from contextlib import contextmanager
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
 ZERO='盘库前归零'; IN='盘库入库'
+MAX_QTY=2**53-1
+
+def valid_quantity(v, signed=False):
+    return type(v) in (int,float) and abs(v)<=MAX_QTY and math.isfinite(v) and (signed or v>=0)
+
+def parse_quantity(raw):
+    raw=raw.strip().replace(',','.')
+    if not re.fullmatch(r'(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)',raw):
+        raise ValueError('请输入有效非负数量，例如 0、0.5 或 12.5')
+    q=float(raw) if '.' in raw else int(raw)
+    if not valid_quantity(q): raise ValueError('数量超出安全数值范围')
+    return q
+
+def stock_value(q,f,row):
+    if not isinstance(f,str) or not f.startswith('=') or not valid_quantity(q,signed=True):
+        raise ValueError(f'第 {row} 行存不是有效数值公式（允许小数及负数），请检查公式或非零件行')
+    return q
+
+def quantity_matches(actual,expected):
+    # Allow only tiny binary floating point noise, not rounded stock values.
+    return valid_quantity(actual,signed=True) and valid_quantity(expected) and math.isclose(actual,expected,rel_tol=0,abs_tol=min(1e-9,4*math.ulp(float(expected))))
+
 DEFAULT_SHEET='库存已有备件'
 DEFAULT_HEADERS={
     'erp':'商品明细码ERP', 'partNo':'Part.No.', 'stock':'存',
@@ -87,7 +110,7 @@ def read_exports(paths):
     all_records=latest(versions); all_shelves=latest(shelves)
     active=[r for r in all_records if not r.get('deleted')]
     for r in active:
-        if type(r.get('qty')) is not int or r['qty']<0 or r['qty']>2**53-1: raise ValueError(f'数量无效: {r["id"]}')
+        if not valid_quantity(r.get('qty')): raise ValueError(f'数量无效: {r["id"]}')
         if not norm(r.get('location')) or not (norm(r.get('erp')) or norm(r.get('partNo'))) or not norm(r.get('worker')): raise ValueError(f'零件/库位/员工缺失: {r["id"]}')
         if r.get('physicalFloor') not in (1,2,3): raise ValueError(f'物理楼层无效: {r["id"]}')
     live=active+[r for r in all_shelves if not r.get('deleted')]
@@ -132,10 +155,13 @@ def totals(items,rows):
     for x in items:
         if x['status']=='excluded': continue
         q=x['qty']; i=x['row']
-        if type(q) is not int or q<0 or i not in rows: raise ValueError('无效的确认结果')
-        y=result[i]; y['qty']+=q; y['records'].append(x)
-        if y['qty']>2**53-1: raise ValueError('合计数量超过安全整数范围')
+        if not valid_quantity(q) or i not in rows: raise ValueError('无效的确认结果')
+        y=result[i]; y['records'].append(x)
         if q: y['locations'].add(x['location'])
+    for y in result.values():
+        q=sum((Decimal(str(x['qty'])) for x in y['records']),Decimal(0))
+        if q>MAX_QTY: raise ValueError('合计数量超出安全数值范围')
+        y['qty']=int(q) if q==q.to_integral_value() else float(q)
     return result
 
 @contextmanager
@@ -167,8 +193,11 @@ def scan(path,sheet,header,mapping):
             i=header+1+offset; e,p=norm(vals[cols['erp']-1]),norm(vals[cols['partNo']-1]);
             if not(e or p): continue
             q=vals[cols['stock']-1]; f=formulas[offset][0]
-            if not isinstance(f,str) or not f.startswith('=') or not isinstance(q,(float,int)) or not math.isfinite(q) or abs(q)>2**53-1 or q!=int(q): raise ValueError(f'第 {i} 行存不是有效整数公式，请先修复或排除非零件行')
-            rows[i]={'erp':e,'partNo':p,'stock':int(q),'formula':f,'location':str(vals[cols['location']-1] or '') if 'location' in cols else '', 'name':str(vals[cols['name']-1] or '') if 'name' in cols else ''}
+            stock_value(q,f,i)
+            # COM represents Excel formula errors as negative signed integers.
+            if type(q) is int and -2146827000<=q<=-2146820000 and not ws.Evaluate(f'ISNUMBER({ws.Cells(i,cols["stock"]).Address(False,False)})'):
+                raise ValueError(f'第 {i} 行存公式返回 Excel 错误，请修复')
+            rows[i]={'erp':e,'partNo':p,'stock':q,'formula':f,'location':str(vals[cols['location']-1] or '') if 'location' in cols else '', 'name':str(vals[cols['name']-1] or '') if 'name' in cols else ''}
         if not rows: raise ValueError('未发现有效零件')
         return rows,cols,lastcol
 
@@ -194,7 +223,7 @@ def write_stock(path,out,sheet,header,cols,lastcol,rows,result,expected_hash,upd
                     loc=ws.Cells(i,cols['location']); loc.NumberFormat='@'; loc.Value2='/'.join(sorted(result[i]['locations']))
             app.CalculateFullRebuild()
             for i,x in result.items():
-                if ws.Cells(i,cols['stock']).Value2!=x['qty']: raise ValueError(f'第 {i} 行公式校验失败，未生成文件')
+                if not quantity_matches(ws.Cells(i,cols['stock']).Value2,x['qty']): raise ValueError(f'第 {i} 行公式校验失败，未生成文件')
             wb.SaveCopyAs(str(tmp.resolve()))
         if filehash(path)!=expected_hash: raise ValueError('生成期间源表发生变化')
         if Path(out).exists(): raise ValueError('输出文件已存在')
@@ -204,7 +233,7 @@ def write_stock(path,out,sheet,header,cols,lastcol,rows,result,expected_hash,upd
 
 class App:
     def __init__(self,root):
-        self.root=root; root.title('Hangcha StockCount · 年度盘库管理 v0.5.1'); root.geometry('1280x760'); self.rows={}; self.decisions={}; self.paths=[]; self.items=[]; self.source=''; self.hash=''; self.new={}
+        self.root=root; root.title('Hangcha StockCount · 年度盘库管理 v0.5.2'); root.geometry('1280x760'); self.rows={}; self.decisions={}; self.paths=[]; self.items=[]; self.source=''; self.hash=''; self.new={}
         bar=ttk.Frame(root,padding=10); bar.pack(fill='x')
         for text,fn in [('1 导入库存表',self.baseline),('2 导入员工 JSON',self.imports),('3 保存项目',self.save),('打开项目',self.load),('生成手机基准',self.catalog),('4 生成新库存表',self.generate)]: ttk.Button(bar,text=text,command=lambda f=fn:self.safe(f)).pack(side='left',padx=3)
         self.info=tk.StringVar(value='请先导入冻结的盘库前库存 Excel'); ttk.Label(root,textvariable=self.info,padding=8).pack(fill='x')
@@ -299,8 +328,9 @@ class App:
         x=self.bykey[keys[0]]; r=x['record']; row=simpledialog.askinteger('目标库存行',f'ERP: {r.get("erp")} / Part: {r.get("partNo")}\n请输入原库存 Excel 行号（未匹配零件需先在基准表新增并核准）',initialvalue=x['row'],minvalue=1)
         if row is None:return
         if row not in self.rows:raise ValueError('不是有效库存行')
-        target=self.rows[row]; qty=simpledialog.askinteger('确认实际数量',f'目标：{target["erp"]} / {target["partNo"]}\n原记录数量 {r["qty"]}；重复记录可排除其余条目',initialvalue=x['qty'],minvalue=0,maxvalue=2**53-1)
+        target=self.rows[row]; qty=simpledialog.askstring('确认实际数量（支持小数）',f'目标：{target["erp"]} / {target["partNo"]}\n原记录数量 {r["qty"]}；重复记录可排除其余条目',initialvalue=str(x['qty']))
         if qty is None:return
+        qty=parse_quantity(qty)
         loc=simpledialog.askstring('确认库位','实际库位',initialvalue=x['location']);
         if loc is None:return
         if not loc.strip():raise ValueError('库位不能为空')

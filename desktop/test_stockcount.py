@@ -1,6 +1,9 @@
 import unittest, tempfile, json
+from unittest.mock import patch
+from types import SimpleNamespace
+from contextlib import contextmanager
 from pathlib import Path
-from stockcount import read_exports, propose, totals, digest, locate, DEFAULT_HEADERS, DEFAULT_SHEET, detect_header, resolve_columns, header_matches
+from stockcount import read_exports, propose, totals, digest, locate, DEFAULT_HEADERS, DEFAULT_SHEET, detect_header, resolve_columns, header_matches, stock_value, parse_quantity, quantity_matches, scan
 
 ROWS={2:{'erp':'E1','partNo':'P1','stock':120},3:{'erp':'E2','partNo':'P2','stock':60},4:{'erp':'E3','partNo':'P3','stock':15}}
 def rec(id,qty=10,loc='A0104',**kw):
@@ -37,8 +40,47 @@ class Tests(unittest.TestCase):
     def test_resolution(self):
         a,b=rec('a'),rec('b',12); d={digest(a):{'action':'accept','row':2,'qty':11,'location':'A0104','reason':'recount'},digest(b):{'action':'exclude','reason':'duplicate'}}
         self.assertEqual(totals(propose([a,b],ROWS,d),ROWS)[2]['qty'],11)
+    def test_fractional_exports_and_totals(self):
+        a,b,c=rec('a',0.1),rec('b',0.2,'B0104'),rec('c',0.5,'C0104')
+        self.assertEqual(self.exports([a,b,c])[0],[a,b,c])
+        self.assertEqual(totals(propose([a,b,c],ROWS,{}),ROWS)[2]['qty'],0.8)
+    def test_fractional_resolution(self):
+        a=rec('a',0.5)
+        d={digest(a):{'action':'accept','row':2,'qty':1.5,'location':'A0104','reason':'recount'}}
+        self.assertEqual(totals(propose([a],ROWS,d),ROWS)[2]['qty'],1.5)
+    def test_invalid_fractional_exports(self):
+        for q in (-0.5,True,'0.5',float('nan'),float('inf')):
+            with self.subTest(q=q),self.assertRaises(ValueError): self.exports([rec('a',q)])
     def test_invalid_qty(self):
         with self.assertRaises(ValueError): self.exports([rec('a',-1)])
+class FractionTests(unittest.TestCase):
+    def test_stock_formula_value(self):
+        for q in (0.5,12.5,-0.5,0,120,0.125):
+            self.assertEqual(stock_value(q,'=A2-B2',9555),q)
+            self.assertEqual(q + -q,0)
+        for q,f in [(None,'=A2'),('0.5','=A2'),(True,'=A2'),(float('nan'),'=A2'),(1.5,'1.5')]:
+            with self.assertRaises(ValueError): stock_value(q,f,9555)
+    def test_scan_keeps_fractional_values(self):
+        class Worksheet:
+            UsedRange=SimpleNamespace(Column=1,Row=1,Columns=SimpleNamespace(Count=3),Rows=SimpleNamespace(Count=3))
+            def Cells(self,r,c):return (r,c)
+            def Range(self,a,b):
+                return {((1,1),(1,3)):SimpleNamespace(Value2=(('商品明细码ERP','Part.No.','存'),)),((2,1),(3,3)):SimpleNamespace(Value2=(('E1','P1',12.5),('E2','P2',-0.5))),((2,3),(3,3)):SimpleNamespace(Formula=(('=A2-B2',),('=A3-B3',)))}[(a,b)]
+        @contextmanager
+        def fake_excel(path):yield SimpleNamespace(CalculateFullRebuild=lambda:None),SimpleNamespace(Worksheets=lambda name:Worksheet())
+        with patch('stockcount.excel',fake_excel):
+            rows,_,_=scan('fake.xlsx',DEFAULT_SHEET,1,{'erp':'商品明细码ERP','partNo':'Part.No.','stock':'存'})
+        self.assertEqual([r['stock'] for r in rows.values()],[12.5,-0.5])
+    def test_manual_decimal(self):
+        for value,expected in [('0.5',0.5),('1,5',1.5),('0',0),('.5',0.5)]:self.assertEqual(parse_quantity(value),expected)
+        for value in ['-0.5','NaN','1.2.3','', '1e2']:
+            with self.assertRaises(ValueError):parse_quantity(value)
+    def test_formula_validation(self):
+        self.assertTrue(quantity_matches(0.1+0.2,0.3))
+        self.assertTrue(quantity_matches(1.5,1.5))
+        self.assertFalse(quantity_matches(1,1.5))
+        self.assertFalse(quantity_matches(0,0.5))
+        self.assertFalse(quantity_matches(True,1))
 class HeaderTests(unittest.TestCase):
     def test_actual_headers(self):
         h=['重量','尺寸 cm','Rack No.','商品明细码ERP','Part.No.','Description','Des china']+['日期入库']*5+['','']+['日期入库']*7+["Q'TY 总计",'销','存','物料码\u00a0  备注','成本单价 USD','成本单价 EUR','当前库存成本总计 EUR','','']
